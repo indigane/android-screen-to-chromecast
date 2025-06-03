@@ -52,8 +52,8 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4") // ConstraintLayout
 
     // LibVLC for Android
-    // Updated to a more recent stable version.
-    implementation("org.videolan.android:libvlc-all:3.5.13")
+    // Trying an older stable version to troubleshoot CI resolution.
+    implementation("org.videolan.android:libvlc-all:3.5.1")
 
     // Lifecycle components
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
