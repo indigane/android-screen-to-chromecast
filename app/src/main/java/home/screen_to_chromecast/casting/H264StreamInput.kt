@@ -1,16 +1,16 @@
 package home.screen_to_chromecast.casting
 
 import android.util.Log
-import org.videolan.libvlc.interfaces.IMedia // This should contain IMediaInput
+// Correct import for IMediaInput if it's a top-level interface in this package for 3.6.2
+import org.videolan.libvlc.interfaces.IMediaInput
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-// Ensure this implements org.videolan.libvlc.interfaces.IMedia.IMediaInput
 class H264StreamInput(
     private val nalQueue: ArrayBlockingQueue<ByteArray>,
     private val isStreamingActiveProvider: () -> Boolean,
     private val getSpsPpsProvider: () -> ByteArray?
-) : IMedia.IMediaInput {
+) : IMediaInput { // Implement the corrected interface path
 
     private var spsPpsSent = false
 
@@ -19,13 +19,13 @@ class H264StreamInput(
         private const val READ_TIMEOUT_MS = 200L
     }
 
-    override fun open(uri: String?): Int { // LibVLC 3.x IMediaInput.open returns int
+    override fun open(uri: String?): Int {
         Log.d(TAG, "IMediaInput open called. URI: $uri")
         spsPpsSent = false
         return 0 // Success
     }
 
-    override fun read(buf: ByteArray, len: Int): Int { // LibVLC 3.x IMediaInput.read returns int
+    override fun read(buf: ByteArray, len: Int): Int {
         if (!isStreamingActiveProvider()) {
             return 0 // EOS
         }
@@ -55,10 +55,10 @@ class H264StreamInput(
                         System.arraycopy(nalUnit, 0, buf, 0, nalUnit.size)
                         bytesRead = nalUnit.size
                     } else {
-                        Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len).")
-                        if (!nalQueue.offerFirst(nalUnit, 10, TimeUnit.MILLISECONDS)) {
-                            Log.e(TAG, "Failed to re-queue oversized NAL unit. Dropping.")
-                        }
+                        Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len). Dropping NAL.")
+                        // Cannot re-queue with offerFirst on ArrayBlockingQueue.
+                        // For simplicity, drop if too large for current buffer.
+                        // Returning 0 indicates no data was read into *this* buffer for this call.
                         return 0
                     }
                 } else {
@@ -78,16 +78,16 @@ class H264StreamInput(
         return bytesRead
     }
 
-    override fun seek(offset: Long): Int { // LibVLC 3.x IMediaInput.seek returns int
+    override fun seek(offset: Long): Int {
         Log.d(TAG, "IMediaInput seek called. Not supported.")
         return -1 // Not supported
     }
 
-    override fun close() { // LibVLC 3.x IMediaInput.close is void
+    override fun close() {
         Log.d(TAG, "IMediaInput close called.")
     }
 
-    override fun getSize(): Long { // LibVLC 3.x IMediaInput.getSize is long
+    override fun getSize(): Long {
         return -1L // Unknown size for live stream
     }
 }
