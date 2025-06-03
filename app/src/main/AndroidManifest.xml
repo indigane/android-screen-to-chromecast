@@ -1,22 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="home.screen_to_chromecast">
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Removed package="home.screen_to_chromecast" as namespace is set in build.gradle.kts -->
 
     <!-- Core Network Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" /> <!-- Useful for device discovery -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- Foreground Service Permission -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-
-    <!-- Required for MediaProjection in a Foreground Service on Android 10 (API 29) and above -->
-    <!--
-        The system will automatically add this permission if the app targets API 29+
-        and declares a foregroundServiceType of "mediaProjection" in the service tag.
-        However, explicitly declaring it can be good for clarity and older tools.
-    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
 
@@ -29,30 +22,22 @@
         android:theme="@style/AppTheme"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        tools:targetApi="31"
-    >
+        tools:targetApi="31">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-        > <!-- singleTop can be useful for main activities -->
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Foreground Service for Screen Casting -->
         <service
             android:name=".casting.ScreenCastingService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection"
-        />
-        <!--
-            android:exported="false" is important unless other apps need to bind to it.
-            android:foregroundServiceType="mediaProjection" is crucial for Android 10+
-        -->
+            android:foregroundServiceType="mediaProjection" />
 
     </application>
 

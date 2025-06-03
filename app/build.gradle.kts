@@ -53,7 +53,7 @@ dependencies {
 
     // LibVLC for Android
     // Trying an older stable version to troubleshoot CI resolution.
-    implementation("org.videolan.android:libvlc-all:3.5.1")
+    implementation("org.videolan.android:libvlc-all:3.6.2")
 
     // Lifecycle components
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
