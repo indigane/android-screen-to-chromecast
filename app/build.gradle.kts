@@ -15,13 +15,6 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        // For LibVLC, if you encounter issues with native libraries,
-        // you might need to specify ABI filters.
-        // For now, let's assume LibVLC handles this or we can add it later if needed.
-        // ndk {
-        //     abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
-        // }
     }
 
     buildTypes {
@@ -34,11 +27,6 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            // applicationVariants.all { variant ->
-            //     variant.outputs.all { output ->
-            //         outputFileName = "ScreenToChromecast-${variant.name}-${variant.versionName}.apk"
-            //     }
-            // }
         }
     }
 
@@ -53,16 +41,7 @@ android {
 
     buildFeatures {
         viewBinding = true // Enable ViewBinding for easier UI interaction
-        // dataBinding = true // Enable if you prefer DataBinding
     }
-
-    // If LibVLC requires packaging of native libs (.so files) and they are
-    // not automatically picked up, you might need to configure sourceSets for jniLibs.
-    // sourceSets {
-    //     main {
-    //         jniLibs.srcDirs = ['libs'] // If you place .so files in a 'libs' folder
-    //     }
-    // }
 }
 
 dependencies {
@@ -73,21 +52,17 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4") // ConstraintLayout
 
     // LibVLC for Android
-    // The official LibVLC Android artifact. Adjust version as needed.
-    // Check https://code.videolan.org/videolan/libvlc-android/-/packages
-    // or Maven Central for the latest version.
-    implementation("org.videolan.android:libvlc-all:3.5.4") // Example version, replace with latest stable
+    // Updated to a more recent stable version.
+    implementation("org.videolan.android:libvlc-all:3.5.13")
 
-    // Lifecycle components (ViewModel, LiveData) - useful for managing UI-related data
+    // Lifecycle components
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0") // For lifecycleScope
 
-    // Activity KTX for by viewModels()
+    // Activity KTX & Fragment KTX
     implementation("androidx.activity:activity-ktx:1.9.0")
-    // Fragment KTX for by viewModels() etc. (if we use Fragments)
     implementation("androidx.fragment:fragment-ktx:1.7.1")
-
 
     // Testing libraries
     testImplementation("junit:junit:4.13.2")
