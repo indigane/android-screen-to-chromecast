@@ -30,8 +30,8 @@ import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
-// Correct import for IMediaInput if it's a top-level interface
-import org.videolan.libvlc.interfaces.IMediaInput
+// Assuming IMediaInput is nested under IMedia for 3.6.2
+import org.videolan.libvlc.interfaces.IMedia
 import java.io.IOException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -88,7 +88,6 @@ class ScreenCastingService : Service() {
 
                 if (resultCode != Activity.RESULT_OK || resultData == null || currentRendererItem == null) {
                     Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, rendererItemPresent=${currentRendererItem!=null}). Stopping service.")
-                    // No explicit release for currentRendererItem here, MainActivity manages RendererHolder item
                     RendererHolder.selectedRendererItem = null
                     stopSelf()
                     return START_NOT_STICKY
@@ -209,11 +208,9 @@ class ScreenCastingService : Service() {
         }
         Log.d(TAG, "Setting up VLC streaming for renderer: ${localRendererItem.displayName ?: localRendererItem.name}")
 
-        val mediaInput: IMediaInput = H264StreamInput(nalUnitQueue, ::isCasting, ::getSpsPpsData)
-        // This Media constructor is the one that takes an IMediaInput.
-        // If this causes an ambiguity or "not found" with 3.6.2,
-        // the way to provide custom input streams has fundamentally changed.
-        val media = Media(localLibVLC, mediaInput)
+        // Explicitly type mediaInput to IMedia.IMediaInput
+        val mediaInput: IMedia.IMediaInput = H264StreamInput(nalUnitQueue, ::isCasting, ::getSpsPpsData)
+        val media = Media(localLibVLC, mediaInput) // This constructor is critical
 
         media.addOption(":demux=h264")
         media.addOption(":h264-fps=$VIDEO_FRAME_RATE")
@@ -221,18 +218,12 @@ class ScreenCastingService : Service() {
         localMediaPlayer.media = media
         media.release()
 
-        // MediaPlayer.setRenderer(RendererItem) typically returns boolean for success.
-        // If the error log implies it returns int, the check needs to change.
-        // The error "Type mismatch: inferred type is Int but Boolean was expected" for this line:
-        // if (mediaPlayer?.setRenderer(currentRendererItem) == true)
-        // suggests that setRenderer in 3.6.2 might return int (e.g. 0 for success).
-        // Let's assume it returns boolean for now, and if error persists, this is a key point.
-        val rendererSetSuccessfully: Boolean = localMediaPlayer.setRenderer(localRendererItem)
-        if (rendererSetSuccessfully) {
+        // MediaPlayer.setRenderer(RendererItem) returns int in some LibVLC versions (0 for success)
+        val rendererSetResult: Int = localMediaPlayer.setRenderer(localRendererItem)
+        if (rendererSetResult == 0) { // Check for 0 for success
             Log.d(TAG, "Renderer successfully set on MediaPlayer.")
         } else {
-            Log.e(TAG, "Failed to set renderer on MediaPlayer.")
-            // Not stopping casting immediately, to see if it plays locally for debug.
+            Log.e(TAG, "Failed to set renderer on MediaPlayer. Result code: $rendererSetResult")
         }
 
         localMediaPlayer.play()
@@ -270,28 +261,25 @@ class ScreenCastingService : Service() {
     }
 
     private fun stopCastingInternals() {
-        // Guard clause:
         if (!isCasting && mediaProjection == null && (mediaPlayer == null || mediaPlayer?.isPlaying == false)) {
-            // If not casting, no projection, and player is null or not playing, likely already stopped.
-            // However, ensure service stops if it's in a limbo state.
-            if (isCasting) { // If isCasting was true but other conditions met, force it false.
+             if (isCasting) {
                 isCasting = false
-                Log.d(TAG, "Corrected isCasting to false in stopCastingInternals guard.")
             } else {
-                 // Log.d(TAG, "stopCastingInternals: Already stopped or nothing to do.")
-                 // Still proceed to stopForeground and stopSelf if service needs to terminate.
+                 if (this::class.java.simpleName == "ScreenCastingService") {
+                     stopForeground(true)
+                     stopSelf()
+                 }
+                 return
             }
         }
-        if (!isCasting) { // If truly not casting, ensure service stops if it's a stop request.
-             Log.d(TAG, "stopCastingInternals called but isCasting is false. Ensuring service stops if needed.")
+        if (!isCasting) {
              stopForeground(true)
              stopSelf()
              return
         }
 
-
         Log.d(TAG, "Stopping casting internals...")
-        isCasting = false // Set this first to signal other threads
+        isCasting = false
 
         encodingThread?.interrupt()
         try {
@@ -308,7 +296,7 @@ class ScreenCastingService : Service() {
         virtualDisplay = null
 
         mediaCodec?.let { codec ->
-            try { codec.stop() } catch (e: IllegalStateException) { /* Expected if already stopped */ }
+            try { codec.stop() } catch (e: IllegalStateException) { /* Expected */ }
             try { codec.release() } catch (e: Exception) { Log.e(TAG, "Err releasing MediaCodec", e) }
         }
         mediaCodec = null
@@ -325,11 +313,11 @@ class ScreenCastingService : Service() {
         }
 
         currentRendererItem = null
-        // RendererHolder.selectedRendererItem is managed by MainActivity
+        RendererHolder.selectedRendererItem = null
 
         Log.d(TAG, "Casting internals stopped.")
-        stopForeground(true) // true = remove notification
-        stopSelf() // Stop the service itself
+        stopForeground(true)
+        stopSelf()
     }
 
     private fun stopCastingAndSelf() {
@@ -338,13 +326,12 @@ class ScreenCastingService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "ScreenCastingService onDestroy.")
-        stopCastingInternals() // Ensure cleanup, calls stopSelf
+        stopCastingInternals()
         mediaPlayer?.release()
         mediaPlayer = null
         libVLC?.release()
         libVLC = null
-        // RendererHolder.selectedRendererItem?.release() // MainActivity manages this
-        RendererHolder.selectedRendererItem = null // Clear reference in holder on service destroy
+        RendererHolder.selectedRendererItem = null
         super.onDestroy()
     }
 
@@ -377,7 +364,7 @@ class ScreenCastingService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.casting_notification_title))
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher) // Make sure this icon exists
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .addAction(R.drawable.ic_stop_cast, getString(R.string.stop_casting_action), stopCastPendingIntent)
             .setOngoing(true)

@@ -1,16 +1,17 @@
 package home.screen_to_chromecast.casting
 
 import android.util.Log
-// Correct import for IMediaInput if it's a top-level interface in this package for 3.6.2
-import org.videolan.libvlc.interfaces.IMediaInput
+// Try IMediaInput as a nested static interface of IMedia
+import org.videolan.libvlc.interfaces.IMedia
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
+// Implement IMedia.IMediaInput if that's the correct path in 3.6.2
 class H264StreamInput(
     private val nalQueue: ArrayBlockingQueue<ByteArray>,
     private val isStreamingActiveProvider: () -> Boolean,
     private val getSpsPpsProvider: () -> ByteArray?
-) : IMediaInput { // Implement the corrected interface path
+) : IMedia.IMediaInput { // Using IMedia.IMediaInput
 
     private var spsPpsSent = false
 
@@ -56,9 +57,9 @@ class H264StreamInput(
                         bytesRead = nalUnit.size
                     } else {
                         Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len). Dropping NAL.")
-                        // Cannot re-queue with offerFirst on ArrayBlockingQueue.
-                        // For simplicity, drop if too large for current buffer.
-                        // Returning 0 indicates no data was read into *this* buffer for this call.
+                        if (!nalQueue.offer(nalUnit, 10, TimeUnit.MILLISECONDS)) {
+                             Log.e(TAG, "Failed to re-queue oversized NAL unit (queue full). Dropping.")
+                        }
                         return 0
                     }
                 } else {
