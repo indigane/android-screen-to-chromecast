@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                     action = ScreenCastingService.ACTION_START_CASTING
                     putExtra(ScreenCastingService.EXTRA_RESULT_CODE, result.resultCode)
                     putExtra(ScreenCastingService.EXTRA_RESULT_DATA, result.data)
-                    // selectedRenderer is set in RendererHolder by setOnItemClickListener
                 }
                 startForegroundService(serviceIntent)
             } else {
@@ -84,9 +83,9 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 val clickedRenderer = discoveredRenderers[position]
 
                 selectedRenderer = clickedRenderer
-                RendererHolder.selectedRendererItem = clickedRenderer // Update holder
+                RendererHolder.selectedRendererItem = clickedRenderer
 
-                // Assuming iconUri is a direct property. If not, this will still fail.
+                // Use direct field access as confirmed by Javadoc for 3.6.1
                 val iconInfo = clickedRenderer.iconUri ?: "no_icon"
                 Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type}, Icon: $iconInfo)")
                 binding.textViewStatus.text = getString(R.string.casting_to, clickedRenderer.displayName ?: clickedRenderer.name)
@@ -127,7 +126,6 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     override fun onEvent(event: RendererDiscoverer.Event) {
         val item = event.item
 
-        // Using integer constants for event types, assuming these are defined in RendererDiscoverer.Event
         when (event.type) {
             RendererDiscoverer.Event.ITEM_ADDED -> {
                 item ?: return
@@ -188,8 +186,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             if (rendererDiscoverer == null) {
                 startDiscovery()
             } else {
-                // Use isStarted() as a method
-                if (rendererDiscoverer?.isStarted() == false) {
+                if (rendererDiscoverer?.isStarted() == false) { // Use isStarted() as a method
                     rendererDiscoverer?.setEventListener(this@MainActivity)
                     if (rendererDiscoverer?.start() == false) {
                          Log.e(TAG, "Failed to restart renderer discovery in onResume.")
