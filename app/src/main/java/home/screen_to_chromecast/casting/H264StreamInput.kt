@@ -1,17 +1,16 @@
 package home.screen_to_chromecast.casting
 
 import android.util.Log
-// Try IMediaInput as a nested static interface of IMedia
-import org.videolan.libvlc.interfaces.IMedia
+// Assuming IMediaInput is a top-level interface in this package for LibVLC 3.6.2
+import org.videolan.libvlc.interfaces.IMediaInput
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-// Implement IMedia.IMediaInput if that's the correct path in 3.6.2
 class H264StreamInput(
     private val nalQueue: ArrayBlockingQueue<ByteArray>,
     private val isStreamingActiveProvider: () -> Boolean,
     private val getSpsPpsProvider: () -> ByteArray?
-) : IMedia.IMediaInput { // Using IMedia.IMediaInput
+) : IMediaInput { // Implementing the assumed top-level interface
 
     private var spsPpsSent = false
 

@@ -30,8 +30,8 @@ import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
-// Assuming IMediaInput is nested under IMedia for 3.6.2
-import org.videolan.libvlc.interfaces.IMedia
+// Assuming IMediaInput is a top-level interface in this package for LibVLC 3.6.2
+import org.videolan.libvlc.interfaces.IMediaInput
 import java.io.IOException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -208,9 +208,10 @@ class ScreenCastingService : Service() {
         }
         Log.d(TAG, "Setting up VLC streaming for renderer: ${localRendererItem.displayName ?: localRendererItem.name}")
 
-        // Explicitly type mediaInput to IMedia.IMediaInput
-        val mediaInput: IMedia.IMediaInput = H264StreamInput(nalUnitQueue, ::isCasting, ::getSpsPpsData)
-        val media = Media(localLibVLC, mediaInput) // This constructor is critical
+        val mediaInput: IMediaInput = H264StreamInput(nalUnitQueue, ::isCasting, ::getSpsPpsData)
+        // This constructor Media(ILibVLC, IMediaInput) is critical.
+        // If it's not found or ambiguous, the API for custom input in 3.6.2 is different.
+        val media = Media(localLibVLC, mediaInput)
 
         media.addOption(":demux=h264")
         media.addOption(":h264-fps=$VIDEO_FRAME_RATE")
@@ -218,7 +219,7 @@ class ScreenCastingService : Service() {
         localMediaPlayer.media = media
         media.release()
 
-        // MediaPlayer.setRenderer(RendererItem) returns int in some LibVLC versions (0 for success)
+        // MediaPlayer.setRenderer(RendererItem) returns int in LibVLC 3.6.2 (0 for success)
         val rendererSetResult: Int = localMediaPlayer.setRenderer(localRendererItem)
         if (rendererSetResult == 0) { // Check for 0 for success
             Log.d(TAG, "Renderer successfully set on MediaPlayer.")

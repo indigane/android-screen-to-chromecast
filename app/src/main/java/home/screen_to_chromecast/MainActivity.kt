@@ -23,7 +23,6 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     private lateinit var binding: ActivityMainBinding
     private var libVLC: ILibVLC? = null
     private var rendererDiscoverer: RendererDiscoverer? = null
-    // Store RendererItem directly. Lifecycle management might be automatic in 3.6.2 or different.
     private val discoveredRenderers = ArrayList<RendererItem>()
     private lateinit var rendererAdapter: ArrayAdapter<String>
     private var selectedRenderer: RendererItem? = null
@@ -85,10 +84,10 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 val clickedRenderer = discoveredRenderers[position]
 
                 selectedRenderer = clickedRenderer
-                RendererHolder.selectedRendererItem = clickedRenderer
+                RendererHolder.selectedRendererItem = clickedRenderer // Update holder
 
-                // Try direct property access for iconUri, then a getter as fallback
-                val iconInfo = clickedRenderer.iconUri ?: try { clickedRenderer.getString("iconUri") } catch (e: Exception) { null } ?: "no_icon"
+                // Assuming iconUri is a direct property. If not, this will still fail.
+                val iconInfo = clickedRenderer.iconUri ?: "no_icon"
                 Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type}, Icon: $iconInfo)")
                 binding.textViewStatus.text = getString(R.string.casting_to, clickedRenderer.displayName ?: clickedRenderer.name)
 
@@ -128,12 +127,11 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     override fun onEvent(event: RendererDiscoverer.Event) {
         val item = event.item
 
-        // Compare event.type with integer constants if that's how LibVLC 3.6.2 defines them
+        // Using integer constants for event types, assuming these are defined in RendererDiscoverer.Event
         when (event.type) {
-            RendererDiscoverer.Event.ITEM_ADDED -> { // Assuming ITEM_ADDED is a public static final int
+            RendererDiscoverer.Event.ITEM_ADDED -> {
                 item ?: return
                 Log.d(TAG, "Renderer Added: ${item.name} (Type: ${item.type}, DisplayName: ${item.displayName})")
-                // No explicit item.hold()
                 synchronized(discoveredRenderers) {
                     if (!discoveredRenderers.any { it.name == item.name }) {
                         discoveredRenderers.add(item)
@@ -141,13 +139,12 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 }
                 updateRendererListUI()
             }
-            RendererDiscoverer.Event.ITEM_DELETED -> { // Assuming ITEM_DELETED is a public static final int
+            RendererDiscoverer.Event.ITEM_DELETED -> {
                 item ?: return
                 Log.d(TAG, "Renderer Removed: ${item.name} (Type: ${item.type})")
                 synchronized(discoveredRenderers) {
                     discoveredRenderers.removeAll { it.name == item.name }
                 }
-                // No explicit item.release()
 
                 if (selectedRenderer?.name == item.name) {
                     Log.d(TAG, "Selected renderer was removed: ${item.name}")
@@ -191,11 +188,10 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             if (rendererDiscoverer == null) {
                 startDiscovery()
             } else {
-                // Try isStarted() as a method call
-                val isDiscStarted = rendererDiscoverer?.isStarted() ?: false
-                if (!isDiscStarted) {
+                // Use isStarted() as a method
+                if (rendererDiscoverer?.isStarted() == false) {
                     rendererDiscoverer?.setEventListener(this@MainActivity)
-                    if (rendererDiscoverer?.start() == false) { // Check return of start
+                    if (rendererDiscoverer?.start() == false) {
                          Log.e(TAG, "Failed to restart renderer discovery in onResume.")
                     }
                 }
@@ -214,7 +210,6 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
         super.onDestroy()
         stopDiscovery()
         rendererDiscoverer = null
-        // No explicit release for items, assuming LibVLC 3.6.2 manages them or they are GC'd
         discoveredRenderers.clear()
         selectedRenderer = null
         RendererHolder.selectedRendererItem = null
