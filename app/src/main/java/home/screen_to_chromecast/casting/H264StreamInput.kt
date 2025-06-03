@@ -1,34 +1,34 @@
 package home.screen_to_chromecast.casting
 
 import android.util.Log
-import org.videolan.libvlc.interfaces.IMedia
+import org.videolan.libvlc.interfaces.IMedia // Correct import for IMedia
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class H264StreamInput(
     private val nalQueue: ArrayBlockingQueue<ByteArray>,
-    private val isStreamingActiveProvider: () -> Boolean, // Changed to a provider
-    private val getSpsPpsProvider: () -> ByteArray? // Changed to a provider
-) : IMedia.Input {
+    private val isStreamingActiveProvider: () -> Boolean,
+    private val getSpsPpsProvider: () -> ByteArray?
+) : IMedia.Input { // Implement the correct interface
 
     private var spsPpsSent = false
-    // private var streamOffset = 0L // Not strictly needed for LibVLC for live stream
 
     companion object {
         private const val TAG = "H264StreamInput"
-        private const val READ_TIMEOUT_MS = 200L // Timeout for polling NAL units
+        private const val READ_TIMEOUT_MS = 200L
     }
 
-    override fun open(uri: String?): Boolean {
+    // Correct override signature
+    override fun open(uri: String?): Int { // open returns int (0 for success, non-zero for error)
         Log.d(TAG, "IMedia.Input open called. URI: $uri")
         spsPpsSent = false
-        // streamOffset = 0L
-        return true
+        return 0 // Success
     }
 
+    // Correct override signature
     override fun read(buf: ByteArray, len: Int): Int {
         if (!isStreamingActiveProvider()) {
-            Log.d(TAG, "Streaming not active, returning 0 (EOS) to read().")
+            // Log.d(TAG, "Streaming not active, returning 0 (EOS) to read().") // Can be noisy
             return 0 // EOS
         }
 
@@ -42,43 +42,32 @@ class H264StreamInput(
                         bytesRead = spsPps.size
                         spsPpsSent = true
                         Log.i(TAG, "Sent SPS/PPS data (${bytesRead} bytes) to LibVLC.")
-                        // streamOffset += bytesRead
                         return bytesRead
                     } else {
                         Log.e(TAG, "Buffer (len: $len) too small for SPS/PPS (size: ${spsPps.size}). This is critical.")
-                        // This is a fatal error for the stream if SPS/PPS cannot be sent.
-                        // LibVLC might not be able to decode without it.
                         return -1 // Indicate error
                     }
                 } else {
-                     Log.d(TAG, "SPS/PPS not available yet, will try to send NAL unit.")
+                    // Log.d(TAG, "SPS/PPS not available yet, will try to send NAL unit.") // Can be noisy
                 }
             }
 
-            // If SPS/PPS was sent, or not available yet, try to send a NAL unit
             val nalUnit = nalQueue.poll(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             if (nalUnit != null) {
-                if (nalUnit.isNotEmpty()) { // Ensure NAL unit is not empty
+                if (nalUnit.isNotEmpty()) {
                     if (nalUnit.size <= len) {
                         System.arraycopy(nalUnit, 0, buf, 0, nalUnit.size)
                         bytesRead = nalUnit.size
-                        // streamOffset += bytesRead
                     } else {
-                        Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len). Dropping NAL. This is problematic.")
-                        // This means LibVLC is asking for chunks smaller than our NAL units.
-                        // This could lead to corrupted stream.
-                        // Returning 0 might make VLC retry, returning -1 signals error.
-                        // For now, we "drop" it by returning 0, hoping next read has larger buffer or NAL is smaller.
-                        return 0; // Or -1 to signal a more fatal error.
+                        Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len). Dropping NAL.")
+                        return 0 // Problematic, but returning 0 might allow VLC to request again
                     }
                 } else {
                     Log.w(TAG, "Polled an empty NAL unit. Ignoring.")
-                    return 0; // Treat as no data available for this read
+                    return 0
                 }
             } else {
-                // Timeout polling, means queue is empty for now
-                // Log.v(TAG, "NAL queue poll timed out or empty.") // Verbose
-                return 0 // No data available at this moment
+                return 0 // No data available at this moment (timeout)
             }
         } catch (e: InterruptedException) {
             Log.w(TAG, "IMedia.Input read interrupted.", e)
@@ -88,20 +77,22 @@ class H264StreamInput(
             Log.e(TAG, "Exception in IMedia.Input read", e)
             return -1
         }
-        // Log.v(TAG, "IMedia.Input read returning ${bytesRead} bytes.") // Verbose
         return bytesRead
     }
 
-    override fun seek(offset: Long): Boolean {
+    // Correct override signature
+    override fun seek(offset: Long): Int { // seek returns int
         Log.d(TAG, "IMedia.Input seek called. Not supported.")
-        return false
+        return -1 // Indicate error or not supported
     }
 
+    // Correct override signature
     override fun close() {
         Log.d(TAG, "IMedia.Input close called.")
     }
 
+    // Correct override signature
     override fun getSize(): Long {
-        return Long.MAX_VALUE // Indicate live/infinite stream
+        return Long.MAX_VALUE
     }
 }
