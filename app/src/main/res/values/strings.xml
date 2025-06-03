@@ -1,0 +1,17 @@
+<!-- app/src/main/res/values/strings.xml -->
+<resources>
+    <string name="app_name">Screen to Chromecast</string>
+    <string name="action_settings">Settings</string> <!-- Example, if needed -->
+    <string name="discovering_devices">Discovering devices…</string>
+    <string name="no_devices_found">No Chromecast devices found. Ensure Wi-Fi is on and you are on the same network as your Chromecast.</string>
+    <string name="select_device_to_cast">Select a device to cast</string>
+    <string name="casting_to">Casting to: %s</string>
+    <string name="casting_stopped">Casting stopped</string>
+    <string name="error_prefix">Error: </string>
+    <string name="status_prefix">Status: </string>
+    <string name="notification_channel_name">Casting Service</string>
+    <string name="notification_channel_description">Notification for ongoing screen casting service</string>
+    <string name="casting_notification_title">Screen Casting Active</string>
+    <string name="casting_notification_text">Your screen is being cast.</string>
+    <string name="stop_casting_action">Stop Casting</string>
+</resources>

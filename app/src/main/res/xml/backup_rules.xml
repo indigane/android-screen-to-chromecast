@@ -1,0 +1,9 @@
+<!-- app/src/main/res/xml/backup_rules.xml -->
+<!--
+   Sample backup rules - allows backup of shared preferences.
+   Adjust as needed for your application's data.
+   See https://developer.android.com/guide/topics/data/autobackup
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="."/>
+</full-backup-content>

@@ -1,0 +1,18 @@
+<!--
+   Sample data extraction rules.
+   See [https://developer.android.com/guide/topics/data/data-extraction-rules](https://developer.android.com/guide/topics/data/data-extraction-rules)
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- TODO: Add <include> and <exclude> rules here for what data should be backed up.
+             By default, all shared preferences are backed up. -->
+        <include domain="sharedpref" path="."/>
+        <exclude domain="sharedpref" path="device.xml"/>
+    </cloud-backup>
+    <!--
+    <device-transfer>
+        <include .../>
+        <exclude .../>
+    </device-transfer>
+    -->
+</data-extraction-rules>
