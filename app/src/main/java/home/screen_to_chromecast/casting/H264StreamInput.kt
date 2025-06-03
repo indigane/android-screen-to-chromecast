@@ -1,11 +1,11 @@
 package home.screen_to_chromecast.casting
 
 import android.util.Log
-import org.videolan.libvlc.interfaces.IMedia // Correct import
+import org.videolan.libvlc.interfaces.IMedia // This should contain IMediaInput
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-// Implement the correct interface IMedia.IMediaInput
+// Ensure this implements org.videolan.libvlc.interfaces.IMedia.IMediaInput
 class H264StreamInput(
     private val nalQueue: ArrayBlockingQueue<ByteArray>,
     private val isStreamingActiveProvider: () -> Boolean,
@@ -19,15 +19,13 @@ class H264StreamInput(
         private const val READ_TIMEOUT_MS = 200L
     }
 
-    // open returns int: 0 on success, non-zero on error.
-    override fun open(uri: String?): Int {
+    override fun open(uri: String?): Int { // LibVLC 3.x IMediaInput.open returns int
         Log.d(TAG, "IMediaInput open called. URI: $uri")
         spsPpsSent = false
         return 0 // Success
     }
 
-    // read returns int: number of bytes read, 0 for EOS, < 0 for error.
-    override fun read(buf: ByteArray, len: Int): Int {
+    override fun read(buf: ByteArray, len: Int): Int { // LibVLC 3.x IMediaInput.read returns int
         if (!isStreamingActiveProvider()) {
             return 0 // EOS
         }
@@ -58,20 +56,16 @@ class H264StreamInput(
                         bytesRead = nalUnit.size
                     } else {
                         Log.e(TAG, "NAL unit (size ${nalUnit.size}) too large for LibVLC buffer (size $len).")
-                        // Re-queue the NAL unit if it's too large for the current buffer.
-                        // This is risky as it might lead to an infinite loop if VLC always provides small buffers.
-                        // A better strategy might be to drop it or signal error.
-                        if (!nalQueue.offerFirst(nalUnit, 10, TimeUnit.MILLISECONDS)) { // Try to put back
+                        if (!nalQueue.offerFirst(nalUnit, 10, TimeUnit.MILLISECONDS)) {
                             Log.e(TAG, "Failed to re-queue oversized NAL unit. Dropping.")
                         }
-                        return 0 // Indicate no data read this time, so VLC might try again with a new buffer
+                        return 0
                     }
                 } else {
-                    // Log.w(TAG, "Polled an empty NAL unit.") // Can be noisy
                     return 0
                 }
             } else {
-                return 0 // No data available (timeout)
+                return 0
             }
         } catch (e: InterruptedException) {
             Log.w(TAG, "IMediaInput read interrupted.", e)
@@ -84,19 +78,16 @@ class H264StreamInput(
         return bytesRead
     }
 
-    // seek returns int: 0 on success, non-zero on error.
-    override fun seek(offset: Long): Int {
+    override fun seek(offset: Long): Int { // LibVLC 3.x IMediaInput.seek returns int
         Log.d(TAG, "IMediaInput seek called. Not supported.")
         return -1 // Not supported
     }
 
-    // close is void
-    override fun close() {
+    override fun close() { // LibVLC 3.x IMediaInput.close is void
         Log.d(TAG, "IMediaInput close called.")
     }
 
-    // getSize is long
-    override fun getSize(): Long {
-        return -1L // Indicate unknown size for a live stream (or Long.MAX_VALUE)
+    override fun getSize(): Long { // LibVLC 3.x IMediaInput.getSize is long
+        return -1L // Unknown size for live stream
     }
 }

@@ -12,13 +12,13 @@ import androidx.lifecycle.lifecycleScope
 import home.screen_to_chromecast.casting.ScreenCastingService
 import home.screen_to_chromecast.databinding.ActivityMainBinding
 import kotlinx.coroutines.launch
-import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.LibVLC // Main LibVLC class
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.RendererDiscoverer // Import RendererDiscoverer
 import org.videolan.libvlc.interfaces.ILibVLC
 import org.videolan.libvlc.util.VLCUtil
 
-// Implement the correct EventListener
+// Implement the correct EventListener from LibVLC
 class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
     private lateinit var binding: ActivityMainBinding
@@ -36,14 +36,14 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                     action = ScreenCastingService.ACTION_START_CASTING
                     putExtra(ScreenCastingService.EXTRA_RESULT_CODE, result.resultCode)
                     putExtra(ScreenCastingService.EXTRA_RESULT_DATA, result.data)
-                    // selectedRenderer is already held and set in RendererHolder
+                    // selectedRenderer is already held and set in RendererHolder by this point
                 }
                 startForegroundService(serviceIntent)
             } else {
                 Log.w(TAG, "MediaProjection permission denied.")
                 binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission denied."
-                selectedRenderer?.release() // Release if permission denied
-                RendererHolder.selectedRendererItem = null // Clear holder too
+                selectedRenderer?.release()
+                RendererHolder.selectedRendererItem = null
                 selectedRenderer = null
             }
         }
@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
         val libVlcArgs = ArrayList<String>()
         libVlcArgs.add("--no-sub-autodetect-file")
+        // libVlcArgs.add("-vvv") // For verbose logging
         try {
             libVLC = LibVLC(this, libVlcArgs)
         } catch (e: IllegalStateException) {
@@ -85,21 +86,18 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             if (position < discoveredRenderers.size) {
                 val clickedRenderer = discoveredRenderers[position]
 
-                // Release previously selected (if any and different from current click)
                 if (selectedRenderer != null && selectedRenderer != clickedRenderer) {
                     selectedRenderer?.release()
                 }
-                // Release item currently in holder if it's different from new selection or if holder had one
                 if (RendererHolder.selectedRendererItem != null && RendererHolder.selectedRendererItem != clickedRenderer) {
                     RendererHolder.selectedRendererItem?.release()
                 }
 
-
-                clickedRenderer.hold() // Hold the new one
+                clickedRenderer.hold() // Hold the new item
                 selectedRenderer = clickedRenderer
-                RendererHolder.selectedRendererItem = clickedRenderer // Update holder
+                RendererHolder.selectedRendererItem = clickedRenderer
 
-                Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type}, Icon: ${clickedRenderer.iconUri})") // iconUri is correct
+                Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type}, Icon: ${clickedRenderer.iconUri})")
                 binding.textViewStatus.text = getString(R.string.casting_to, clickedRenderer.displayName ?: clickedRenderer.name)
 
                 val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -113,12 +111,12 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             if (rendererDiscoverer == null) {
                 rendererDiscoverer = RendererDiscoverer(vlc, "microdns_renderer")
             }
-            rendererDiscoverer?.setEventListener(this@MainActivity) // Set listener here
+            rendererDiscoverer?.setEventListener(this@MainActivity)
             if (rendererDiscoverer?.start() == true) {
                 Log.d(TAG, "Renderer discovery started.")
                 binding.textViewStatus.text = getString(R.string.discovering_devices)
             } else {
-                Log.e(TAG, "Failed to start renderer discovery. Discoverer: $rendererDiscoverer")
+                Log.e(TAG, "Failed to start renderer discovery. Discoverer: $rendererDiscoverer, VLC: $vlc")
                 binding.textViewStatus.text = getString(R.string.error_prefix) + "Failed to start discovery."
             }
         } ?: run {
@@ -133,27 +131,29 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             it.stop()
             Log.d(TAG, "Renderer discovery stopped.")
         }
-        // Do not nullify rendererDiscoverer here, so isStarted can be checked in onResume
+        // Don't nullify rendererDiscoverer here, so isStarted can be checked
     }
 
-    // This is the correct method to override from RendererDiscoverer.EventListener
     override fun onEvent(event: RendererDiscoverer.Event) {
-        val item = event.item ?: return // Item can be null for some events
+        val item = event.item // event.item can be null for some event types
+        // It's safer to check item for nullity before using it, especially for ItemDeleted
 
         when (event.type) {
             RendererDiscoverer.Event.Type.ItemAdded -> {
+                item ?: return // If item is null for ItemAdded, something is wrong, ignore.
                 Log.d(TAG, "Renderer Added: ${item.name} (Type: ${item.type}, DisplayName: ${item.displayName})")
-                item.hold() // Hold the item as we are adding it to our list
+                item.hold()
                 synchronized(discoveredRenderers) {
                     if (!discoveredRenderers.any { it.name == item.name }) {
                         discoveredRenderers.add(item)
                     } else {
-                        item.release() // Release if it's a duplicate
+                        item.release() // Already have it, release the new instance
                     }
                 }
                 updateRendererListUI()
             }
             RendererDiscoverer.Event.Type.ItemDeleted -> {
+                item ?: return // If item is null for ItemDeleted, we can't identify what was deleted.
                 Log.d(TAG, "Renderer Removed: ${item.name} (Type: ${item.type})")
                 var rendererToRelease: RendererItem? = null
                 synchronized(discoveredRenderers) {
@@ -162,12 +162,12 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                         val existingItem = iterator.next()
                         if (existingItem.name == item.name) {
                             iterator.remove()
-                            rendererToRelease = existingItem // This is the item we held
+                            rendererToRelease = existingItem
                             break
                         }
                     }
                 }
-                rendererToRelease?.release() // Release the item we previously held
+                rendererToRelease?.release()
 
                 if (selectedRenderer?.name == item.name) {
                     Log.d(TAG, "Selected renderer was removed: ${item.name}")
@@ -175,10 +175,9 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                         action = ScreenCastingService.ACTION_STOP_CASTING
                     }
                     startService(serviceIntent)
-                    // selectedRenderer is already released by rendererToRelease logic if it was in the list
-                    selectedRenderer = null
+                    selectedRenderer = null // Already released by rendererToRelease logic
                     if (RendererHolder.selectedRendererItem?.name == item.name) {
-                        RendererHolder.selectedRendererItem?.release()
+                        RendererHolder.selectedRendererItem?.release() // Release from holder
                         RendererHolder.selectedRendererItem = null
                     }
                     binding.textViewStatus.text = getString(R.string.casting_stopped)
@@ -209,13 +208,12 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
     override fun onResume() {
         super.onResume()
-        // Check if libVLC is initialized and discoverer exists and is not started
         if (libVLC != null) {
-            if (rendererDiscoverer == null) { // If discoverer was nullified (e.g. after full stop)
+            if (rendererDiscoverer == null) {
                 startDiscovery()
-            } else if (rendererDiscoverer?.isStarted == false) { // Check property 'isStarted'
-                rendererDiscoverer?.setEventListener(this@MainActivity) // Re-set listener
-                if (rendererDiscoverer?.start() == false) {
+            } else if (rendererDiscoverer?.isStarted == false) { // isStarted is a property
+                rendererDiscoverer?.setEventListener(this@MainActivity)
+                if (rendererDiscoverer?.start() == false) { // Check return of start
                      Log.e(TAG, "Failed to restart renderer discovery in onResume.")
                 }
             }
@@ -226,18 +224,15 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
         super.onPause()
         if (isFinishing) {
             stopDiscovery()
-            // Full cleanup happens in onDestroy
-        } else {
-            // Optionally stop discovery to save battery if app is paused for a long time
-            // For now, let it run if not finishing.
-            // rendererDiscoverer?.setEventListener(null) // To prevent callbacks when paused if not stopping
         }
+        // else: Consider if discovery should be stopped/paused if activity is just paused.
+        // For now, let it run to maintain an updated list if user returns quickly.
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopDiscovery() // Ensure discovery is stopped and listener is removed
-        rendererDiscoverer = null // Nullify to allow recreation
+        stopDiscovery()
+        rendererDiscoverer = null // Safe to nullify here
 
         synchronized(discoveredRenderers) {
             discoveredRenderers.forEach { it.release() }
@@ -260,6 +255,5 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
 object RendererHolder {
     var selectedRendererItem: RendererItem? = null
-        // Custom setter to manage release of the old item is complex due to shared nature.
-        // MainActivity should be responsible for releasing items it puts here when they are replaced or no longer needed.
+    // No custom setter needed if MainActivity manages release properly before setting a new one.
 }
