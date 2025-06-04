@@ -86,8 +86,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 RendererHolder.selectedRendererItem = clickedRenderer
 
                 // Use direct field access as confirmed by Javadoc for 3.6.1
-                val iconInfo = clickedRenderer.iconUri ?: "no_icon"
-                Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type}, Icon: $iconInfo)")
+                Log.d(TAG, "Selected renderer: ${clickedRenderer.name} (Type: ${clickedRenderer.type})")
                 binding.textViewStatus.text = getString(R.string.casting_to, clickedRenderer.displayName ?: clickedRenderer.name)
 
                 val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -127,7 +126,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
         val item = event.item
 
         when (event.type) {
-            RendererDiscoverer.Event.ITEM_ADDED -> {
+            RendererDiscoverer.Event.ItemAdded -> {
                 item ?: return
                 Log.d(TAG, "Renderer Added: ${item.name} (Type: ${item.type}, DisplayName: ${item.displayName})")
                 synchronized(discoveredRenderers) {
@@ -137,7 +136,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 }
                 updateRendererListUI()
             }
-            RendererDiscoverer.Event.ITEM_DELETED -> {
+            RendererDiscoverer.Event.ItemDeleted -> {
                 item ?: return
                 Log.d(TAG, "Renderer Removed: ${item.name} (Type: ${item.type})")
                 synchronized(discoveredRenderers) {
@@ -186,11 +185,10 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             if (rendererDiscoverer == null) {
                 startDiscovery()
             } else {
-                if (rendererDiscoverer?.isStarted() == false) { // Use isStarted() as a method
-                    rendererDiscoverer?.setEventListener(this@MainActivity)
-                    if (rendererDiscoverer?.start() == false) {
-                         Log.e(TAG, "Failed to restart renderer discovery in onResume.")
-                    }
+                // Per instructions, removed the isStarted() check, directly attempt to set listener and start
+                rendererDiscoverer?.setEventListener(this@MainActivity)
+                if (rendererDiscoverer?.start() == false) {
+                     Log.e(TAG, "Failed to restart renderer discovery in onResume.")
                 }
             }
         }
