@@ -68,7 +68,6 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
             binding.textViewStatus.text = getString(R.string.error_prefix) + "Error initializing LibVLC."
             return
         }
-        startDiscovery()
     }
 
     private fun setupToolbar() {
@@ -118,7 +117,8 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
         rendererDiscoverer?.let {
             it.setEventListener(null)
             it.stop()
-            Log.d(TAG, "Renderer discovery stopped.")
+            rendererDiscoverer = null // Add this line
+            Log.d(TAG, "Renderer discovery stopped and instance nullified.") // Modified log for clarity
         }
     }
 
@@ -181,24 +181,14 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
     override fun onResume() {
         super.onResume()
-        if (libVLC != null) {
-            if (rendererDiscoverer == null) {
-                startDiscovery()
-            } else {
-                // Per instructions, removed the isStarted() check, directly attempt to set listener and start
-                rendererDiscoverer?.setEventListener(this@MainActivity)
-                if (rendererDiscoverer?.start() == false) {
-                     Log.e(TAG, "Failed to restart renderer discovery in onResume.")
-                }
-            }
+        if (libVLC != null) { // Ensure LibVLC is ready
+            startDiscovery() // This will handle creation if null and starting
         }
     }
 
     override fun onPause() {
         super.onPause()
-        if (isFinishing) {
-            stopDiscovery()
-        }
+        stopDiscovery()
     }
 
     override fun onDestroy() {
