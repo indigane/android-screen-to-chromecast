@@ -17,6 +17,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.content.Intent // Added for Intent.URI_INTENT_SCHEME
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Surface
@@ -114,6 +115,45 @@ class ScreenCastingService : Service() {
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(mediaProjectionCallback, null)
 
+                // Media preparation logic starts here
+                if (libVLC == null) {
+                    Log.e(TAG, "LibVLC is null, cannot set up media.")
+                    updateNotification("Error: LibVLC not available for media setup")
+                    stopCastingInternals()
+                    return START_NOT_STICKY
+                }
+
+                if (mediaPlayer == null) {
+                    Log.e(TAG, "MediaPlayer is null, cannot set up media.")
+                    updateNotification("Error: MediaPlayer not available")
+                    stopCastingInternals()
+                    return START_NOT_STICKY
+                }
+
+                if (resultData == null) { // Already checked above, but good for safety
+                    Log.e(TAG, "ResultData is null, cannot set up media.")
+                    updateNotification("Error: Media projection data not available")
+                    stopCastingInternals()
+                    return START_NOT_STICKY
+                }
+
+                // Media setup wrapped in try-catch
+                try {
+                    // libVLC, mediaPlayer, and resultData are confirmed non-null by checks before this.
+                    val media = Media(libVLC!!, "screen://")
+                    val mediaProjectionDataUri = resultData!!.toUri(Intent.URI_INTENT_SCHEME)
+                    media.addOption(":screen-media-projection-data=$mediaProjectionDataUri")
+                    mediaPlayer!!.setMedia(media)
+                    media.release()
+                    Log.d(TAG, "Screen media set up on MediaPlayer.")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error during media setup for screen casting", e)
+                    updateNotification("Error: Failed to set up screen media")
+                    stopCastingInternals()
+                    return START_NOT_STICKY
+                }
+                // Media preparation logic ends here
+
                 startServiceDiscovery() // Start discovery, listener will handle setRenderer
 
                 // Notification was: "Searching for [device]..."
@@ -182,8 +222,8 @@ class ScreenCastingService : Service() {
                         Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
                         currentRendererItem = item
                         mediaPlayer?.setRenderer(currentRendererItem)
-                        // Potentially start playback here if media is set, or ensure it's playing if already set
-                        // mediaPlayer?.play()
+                        mediaPlayer?.play()
+                        Log.i(TAG, "Playback started for renderer: ${currentRendererItem?.name}")
                         updateNotification(getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device"))
                         stopServiceDiscovery() // Found our target, no need to discover further
                     }
