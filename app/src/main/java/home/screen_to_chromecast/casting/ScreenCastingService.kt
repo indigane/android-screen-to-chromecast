@@ -56,7 +56,7 @@ class ScreenCastingService : Service() {
     // New fields for service-side renderer discovery
     private var serviceRendererDiscoverer: org.videolan.libvlc.RendererDiscoverer? = null
     private var targetRendererName: String? = null
-    private var targetRendererType: Int = -1
+    private var targetRendererType: Int = -1 // Ensure this is Int
     private val serviceRendererListener = ServiceRendererEventListener()
 
 
@@ -244,8 +244,9 @@ class ScreenCastingService : Service() {
         // Stop and release MediaPlayer
         mediaPlayer?.let { player ->
             try {
-                if (player.renderer != null) { // Important: Check if renderer is set before trying to operate on it
-                    player.setRenderer(null) // Detach renderer
+                // Ensure player.renderer is accessed correctly and player.setRenderer is called correctly
+                if (player.renderer != null) {
+                    player.setRenderer(null) // Detach any existing renderer
                 }
                 if (player.isPlaying) {
                     player.stop()
