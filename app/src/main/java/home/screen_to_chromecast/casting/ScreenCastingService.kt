@@ -80,30 +80,58 @@ class ScreenCastingService : Service() {
                 }
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
                 val resultData: Intent? = intent.getParcelableExtra(EXTRA_RESULT_DATA)
-                currentRendererItem = RendererHolder.selectedRendererItem
 
-                if (resultCode != Activity.RESULT_OK || resultData == null || currentRendererItem == null) {
-                    Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, rendererItemPresent=${currentRendererItem!=null}). Stopping service.")
-                    RendererHolder.selectedRendererItem = null
+                val targetName = RendererHolder.selectedRendererName
+                val targetType = RendererHolder.selectedRendererType
+
+                if (resultCode != Activity.RESULT_OK || resultData == null || targetName == null || targetType == -1) {
+                    Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, targetName=$targetName, targetType=$targetType). Stopping service.")
+                    RendererHolder.selectedRendererName = null
+                    RendererHolder.selectedRendererType = -1
                     stopSelf()
                     return START_NOT_STICKY
                 }
 
-                val rendererName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: "Unknown Device"
-                startForeground(NOTIFICATION_ID, createNotification("Starting cast to $rendererName..."))
+                var foundRendererItem: RendererItem? = null
+                val availableRenderers = mediaPlayer?.getAvailableRenderers()
+                if (availableRenderers.isNullOrEmpty()) {
+                    Log.w(TAG, "Service's MediaPlayer has no available renderers. Cannot find: $targetName")
+                } else {
+                    for (renderer in availableRenderers) {
+                        // targetName is guaranteed non-null here.
+                        // renderer.name could be null. Kotlin's == handles this safely.
+                        if (renderer.name == targetName && renderer.type == targetType) {
+                            foundRendererItem = renderer
+                            val foundRendererName = renderer.name ?: "Unknown (matched target)"
+                            Log.d(TAG, "Found matching renderer in service: $foundRendererName (Type: ${renderer.type})")
+                            break
+                        }
+                    }
+                }
+
+                currentRendererItem = foundRendererItem
+
+                if (currentRendererItem == null) {
+                    Log.e(TAG, "Could not find renderer '$targetName' (type $targetType) using service's LibVLC instance. Stopping cast.")
+                    updateNotification("Failed to connect to $targetName")
+                    RendererHolder.selectedRendererName = null
+                    RendererHolder.selectedRendererType = -1
+                    // stopCastingInternals() // Called by stopSelf() through onDestroy if service stops
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+
+                val rendererDisplayName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: "Unknown Device"
+                startForeground(NOTIFICATION_ID, createNotification("Starting cast to $rendererDisplayName..."))
                 isCasting = true
 
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(MediaProjectionCallback(), null)
 
-                // Removed startScreenCaptureAndEncode() and startVLCStreaming()
-                // The service will now only manage MediaProjection and basic MediaPlayer state.
-                // Actual streaming to the device via LibVLC's custom input is removed.
-                // For now, we'll set the renderer and try to play a placeholder or just show connecting.
-                mediaPlayer?.setRenderer(currentRendererItem) // This might not do anything without a valid media.
-                // mediaPlayer?.play() // This would need a valid media. Placeholder for now.
+                mediaPlayer?.setRenderer(currentRendererItem)
+                // mediaPlayer?.play() // This would need a valid media.
 
-                updateNotification("Connecting to $rendererName...")
+                updateNotification("Connecting to $rendererDisplayName...")
             }
             ACTION_STOP_CASTING -> {
                 Log.d(TAG, "ACTION_STOP_CASTING received.")
@@ -162,7 +190,8 @@ class ScreenCastingService : Service() {
         }
 
         currentRendererItem = null
-        RendererHolder.selectedRendererItem = null
+        RendererHolder.selectedRendererName = null
+        RendererHolder.selectedRendererType = -1
 
         Log.d(TAG, "Casting internals stopped.")
         stopForeground(true)
@@ -180,7 +209,8 @@ class ScreenCastingService : Service() {
         mediaPlayer = null
         libVLC?.release()
         libVLC = null
-        RendererHolder.selectedRendererItem = null
+        RendererHolder.selectedRendererName = null
+        RendererHolder.selectedRendererType = -1
         super.onDestroy()
     }
 
