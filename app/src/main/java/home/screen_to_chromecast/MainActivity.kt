@@ -41,7 +41,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 Log.w(TAG, "MediaProjection permission denied.")
                 binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission denied."
                 RendererHolder.selectedRendererName = null
-                RendererHolder.selectedRendererType = -1 // Reset to default
+                RendererHolder.selectedRendererType = null
                 selectedRenderer = null
             }
         }
@@ -84,8 +84,8 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
                 selectedRenderer = clickedRenderer
                 RendererHolder.selectedRendererName = clickedRenderer.name
-                // Aggressively convert type to Int, assuming clickedRenderer.type might be seen as String
-                RendererHolder.selectedRendererType = clickedRenderer.type.toString().toIntOrNull() ?: -1
+                // Assuming clickedRenderer.type is String as per subtask instruction
+                RendererHolder.selectedRendererType = clickedRenderer.type
 
                 // Use direct field access as confirmed by Javadoc for 3.6.1
                 val clickedRendererName = clickedRenderer.name ?: "Unknown Name"
@@ -197,7 +197,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                     // RendererHolder.selectedRendererName should also be a non-null name if set
                     if (RendererHolder.selectedRendererName == deletedItemName) {
                         RendererHolder.selectedRendererName = null
-                        RendererHolder.selectedRendererType = -1 // Reset to default
+                        RendererHolder.selectedRendererType = null
                     }
                     binding.textViewStatus.text = getString(R.string.casting_stopped)
                 } else if (deletedItemName == null && selectedRenderer != null && selectedRenderer?.name == null) {
@@ -211,7 +211,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                     startService(serviceIntent)
                     selectedRenderer = null
                     if (RendererHolder.selectedRendererName == null) { // If it was stored as null
-                        RendererHolder.selectedRendererType = -1
+                        RendererHolder.selectedRendererType = null
                     }
                     binding.textViewStatus.text = getString(R.string.casting_stopped)
                 }
@@ -258,7 +258,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
         discoveredRenderers.clear()
         selectedRenderer = null
         RendererHolder.selectedRendererName = null
-        RendererHolder.selectedRendererType = -1 // Reset to default
+        RendererHolder.selectedRendererType = null
         libVLC?.release()
         libVLC = null
         Log.d(TAG, "MainActivity onDestroy: LibVLC released.")
@@ -271,5 +271,5 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
 object RendererHolder {
     var selectedRendererName: String? = null
-    var selectedRendererType: Int = -1 // Ensure this is Int, as RendererItem.type is Int
+    var selectedRendererType: String? = null
 }

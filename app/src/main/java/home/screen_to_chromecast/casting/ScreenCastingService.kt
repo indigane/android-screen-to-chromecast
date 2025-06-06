@@ -56,7 +56,7 @@ class ScreenCastingService : Service() {
     // New fields for service-side renderer discovery
     private var serviceRendererDiscoverer: org.videolan.libvlc.RendererDiscoverer? = null
     private var targetRendererName: String? = null
-    private var targetRendererType: Int = -1 // Ensure this is Int
+    private var targetRendererType: String? = null
     private val serviceRendererListener = ServiceRendererEventListener()
 
 
@@ -92,14 +92,14 @@ class ScreenCastingService : Service() {
 
                 // Store target renderer details from RendererHolder
                 this.targetRendererName = RendererHolder.selectedRendererName
-                this.targetRendererType = RendererHolder.selectedRendererType
+                this.targetRendererType = RendererHolder.selectedRendererType // Now String? from RendererHolder
 
                 // Validate essential data including the retrieved target renderer details
-                if (resultCode != Activity.RESULT_OK || resultData == null || this.targetRendererName == null || this.targetRendererType == -1) {
+                if (resultCode != Activity.RESULT_OK || resultData == null || this.targetRendererName == null || this.targetRendererType == null) {
                     Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, targetName=${this.targetRendererName}, targetType=${this.targetRendererType}). Stopping service.")
                     RendererHolder.selectedRendererName = null // Clear holder as we are failing
-                    RendererHolder.selectedRendererType = -1
-                    updateNotification("Error: Invalid casting parameters")
+                    RendererHolder.selectedRendererType = null
+                    updateNotification("Error: Invalid casting parameters") // TODO: Use new string resource
                     stopSelf() // This will trigger onDestroy -> stopCastingInternals
                     return START_NOT_STICKY
                 }
@@ -177,8 +177,8 @@ class ScreenCastingService : Service() {
                     val itemDisplayName = item.displayName ?: itemName
                     Log.d(TAG, "Service Discovery: Renderer Added - $itemDisplayName (Name: $itemName, Type: ${item.type})")
 
-                    val currentTargetType: Int = targetRendererType // Ensure targetRendererType is treated as Int
-                    if (item.name == targetRendererName && item.type == currentTargetType) {
+                    // targetRendererType is now String?, item.type is assumed to be String? from RendererItem
+                    if (item.name == targetRendererName && item.type == targetRendererType) {
                         Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
                         currentRendererItem = item
                         mediaPlayer?.setRenderer(currentRendererItem)
@@ -272,9 +272,9 @@ class ScreenCastingService : Service() {
         // Clear renderer item from holder and local target
         currentRendererItem = null
         targetRendererName = null
-        targetRendererType = -1
+        targetRendererType = null // Changed from -1
         RendererHolder.selectedRendererName = null // Also clear the global holder
-        RendererHolder.selectedRendererType = -1
+        RendererHolder.selectedRendererType = null // Changed from -1
 
         Log.d(TAG, "Casting internals stopped and resources released.")
         stopForeground(true)
