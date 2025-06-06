@@ -155,6 +155,11 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                         // This might lead to multiple "Unknown Name" items if not careful.
                         // A more robust solution might involve checking other properties or instance equality.
                         discoveredRenderers.add(item) // Reconsidering: adding null-named items might be problematic for removal
+                    } else {
+                        // This branch is hit if item.name is not null AND it's already in discoveredRenderers.
+                        // (i.e., item.name != null && discoveredRenderers.any { it.name == item.name })
+                        val itemNameForLog = item.name // Should be non-null here
+                        Log.d(TAG, "Renderer '$itemNameForLog' already discovered. Not adding again.")
                     }
                 }
                 updateRendererListUI()
@@ -265,5 +270,5 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
 object RendererHolder {
     var selectedRendererName: String? = null
-    var selectedRendererType: Int = -1 // Using Int, as RendererItem.type is Int
+    var selectedRendererType: Int = -1 // Ensure this is Int, as RendererItem.type is Int
 }

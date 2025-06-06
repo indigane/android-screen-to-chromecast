@@ -53,6 +53,13 @@ class ScreenCastingService : Service() {
 
     private val mediaProjectionCallback = MediaProjectionCallback()
 
+    // New fields for service-side renderer discovery
+    private var serviceRendererDiscoverer: org.videolan.libvlc.RendererDiscoverer? = null
+    private var targetRendererName: String? = null
+    private var targetRendererType: Int = -1
+    private val serviceRendererListener = ServiceRendererEventListener()
+
+
     override fun onCreate() {
         super.onCreate()
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -83,57 +90,35 @@ class ScreenCastingService : Service() {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
                 val resultData: Intent? = intent.getParcelableExtra(EXTRA_RESULT_DATA)
 
-                val targetName = RendererHolder.selectedRendererName
-                val targetType = RendererHolder.selectedRendererType
+                // Store target renderer details from RendererHolder
+                this.targetRendererName = RendererHolder.selectedRendererName
+                this.targetRendererType = RendererHolder.selectedRendererType
 
-                if (resultCode != Activity.RESULT_OK || resultData == null || targetName == null || targetType == -1) {
-                    Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, targetName=$targetName, targetType=$targetType). Stopping service.")
-                    RendererHolder.selectedRendererName = null
+                // Validate essential data including the retrieved target renderer details
+                if (resultCode != Activity.RESULT_OK || resultData == null || this.targetRendererName == null || this.targetRendererType == -1) {
+                    Log.e(TAG, "Invalid data for starting cast (resultCode=$resultCode, resultDataPresent=${resultData!=null}, targetName=${this.targetRendererName}, targetType=${this.targetRendererType}). Stopping service.")
+                    RendererHolder.selectedRendererName = null // Clear holder as we are failing
                     RendererHolder.selectedRendererType = -1
-                    stopSelf()
+                    updateNotification("Error: Invalid casting parameters")
+                    stopSelf() // This will trigger onDestroy -> stopCastingInternals
                     return START_NOT_STICKY
                 }
 
-                var foundRendererItem: RendererItem? = null
-                val availableRenderers = mediaPlayer?.getAvailableRenderers()
-                if (availableRenderers.isNullOrEmpty()) {
-                    Log.w(TAG, "Service's MediaPlayer has no available renderers. Cannot find: $targetName")
-                } else {
-                    for (renderer in availableRenderers) {
-                        // targetName is guaranteed non-null here.
-                        // renderer.name could be null. Kotlin's == handles this safely.
-                        if (renderer.name == targetName && renderer.type == targetType) {
-                            foundRendererItem = renderer
-                            val foundRendererName = renderer.name ?: "Unknown (matched target)"
-                            Log.d(TAG, "Found matching renderer in service: $foundRendererName (Type: ${renderer.type})")
-                            break
-                        }
-                    }
-                }
+                // Clear currentRendererItem from any previous session before starting new discovery
+                currentRendererItem = null
 
-                currentRendererItem = foundRendererItem
-
-                if (currentRendererItem == null) {
-                    Log.e(TAG, "Could not find renderer '$targetName' (type $targetType) using service's LibVLC instance. Stopping cast.")
-                    updateNotification("Failed to connect to $targetName")
-                    RendererHolder.selectedRendererName = null
-                    RendererHolder.selectedRendererType = -1
-                    // stopCastingInternals() // Called by stopSelf() through onDestroy if service stops
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-
-                val rendererDisplayName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: "Unknown Device"
-                startForeground(NOTIFICATION_ID, createNotification("Starting cast to $rendererDisplayName..."))
-                isCasting = true
+                val notificationDeviceName = this.targetRendererName ?: "Unknown Device"
+                startForeground(NOTIFICATION_ID, createNotification(getString(R.string.searching_for_device, notificationDeviceName)))
+                isCasting = true // Set casting flag
 
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(mediaProjectionCallback, null)
 
-                mediaPlayer?.setRenderer(currentRendererItem)
-                // mediaPlayer?.play() // This would need a valid media.
+                startServiceDiscovery() // Start discovery, listener will handle setRenderer
 
-                updateNotification("Connecting to $rendererDisplayName...")
+                // Notification was: "Searching for [device]..."
+                // If startServiceDiscovery fails and calls stopCastingInternals, notification will be updated there.
+                // If successful, listener will update to "Casting to [device]"
             }
             ACTION_STOP_CASTING -> {
                 Log.d(TAG, "ACTION_STOP_CASTING received.")
@@ -143,7 +128,82 @@ class ScreenCastingService : Service() {
         return START_NOT_STICKY
     }
 
-    // Removed startScreenCaptureAndEncode, processEncodedData, startVLCStreaming, getSpsPpsData
+    private fun startServiceDiscovery() {
+        if (libVLC == null) {
+            Log.e(TAG, "LibVLC instance is null, cannot start service discovery.")
+            updateNotification("Error: LibVLC not available for discovery") // Inform user
+            stopCastingInternals() // Stop casting as discovery isn't possible
+            return
+        }
+        if (serviceRendererDiscoverer == null) {
+            Log.d(TAG, "Creating new serviceRendererDiscoverer")
+            serviceRendererDiscoverer = org.videolan.libvlc.RendererDiscoverer(libVLC!!, "microdns_renderer")
+        }
+        serviceRendererDiscoverer?.setEventListener(serviceRendererListener)
+        if (serviceRendererDiscoverer?.start() == true) {
+            Log.d(TAG, "Service-side renderer discovery started.")
+            // Notification is typically "Searching for [device]..." set by onStartCommand
+        } else {
+            Log.e(TAG, "Failed to start service-side renderer discovery.")
+            updateNotification("Error: Failed to start discovery")
+            stopCastingInternals() // Stop if discovery cannot be initiated
+        }
+    }
+
+    private fun stopServiceDiscovery() {
+        serviceRendererDiscoverer?.let {
+            Log.d(TAG, "Stopping service-side renderer discovery.")
+            it.setEventListener(null)
+            it.stop()
+        }
+        serviceRendererDiscoverer = null
+        Log.d(TAG, "Service-side renderer discovery stopped and nullified.")
+    }
+
+
+    // Listener for the service's own RendererDiscoverer instance
+    private inner class ServiceRendererEventListener : org.videolan.libvlc.RendererDiscoverer.EventListener {
+        override fun onEvent(event: org.videolan.libvlc.RendererDiscoverer.Event?) {
+            if (libVLC == null || serviceRendererDiscoverer == null || event == null) {
+                Log.w(TAG, "ServiceRendererEventListener: Ignoring event due to null LibVLC, discoverer, or event.")
+                return
+            }
+
+            val item = event.item ?: return
+
+            when (event.type) {
+                org.videolan.libvlc.RendererDiscoverer.Event.ItemAdded -> {
+                    val itemName = item.name ?: "Unknown Name"
+                    val itemDisplayName = item.displayName ?: itemName
+                    Log.d(TAG, "Service Discovery: Renderer Added - $itemDisplayName (Name: $itemName, Type: ${item.type})")
+
+                    if (item.name == targetRendererName && item.type == targetRendererType) {
+                        Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
+                        currentRendererItem = item
+                        mediaPlayer?.setRenderer(currentRendererItem)
+                        // Potentially start playback here if media is set, or ensure it's playing if already set
+                        // mediaPlayer?.play()
+                        updateNotification(getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device"))
+                        stopServiceDiscovery() // Found our target, no need to discover further
+                    }
+                }
+                org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
+                    val itemName = item.name ?: "Unknown Name"
+                    Log.d(TAG, "Service Discovery: Renderer Deleted - $itemName (Type: ${item.type})")
+                    // Optional: If the deleted item is our currentRendererItem, handle it (e.g., stop casting)
+                    if (currentRendererItem != null && currentRendererItem?.name == item.name && currentRendererItem?.type == item.type) {
+                        Log.w(TAG, "Service Discovery: Current renderer $itemName was removed!")
+                        updateNotification("Error: Device $itemName disconnected")
+                        stopCastingInternals() // Stop casting as the renderer is gone
+                    }
+                }
+                else -> {
+                    // Other events: AllItemsDeleted, etc.
+                    // Log.d(TAG, "ServiceRendererEventListener: Event type ${event.type}")
+                }
+            }
+        }
+    }
 
     private inner class MediaProjectionCallback : MediaProjection.Callback() {
         override fun onStop() {
@@ -169,6 +229,8 @@ class ScreenCastingService : Service() {
         Log.d(TAG, "Stopping casting internals...")
         isCasting = false // Set casting flag to false immediately
 
+        stopServiceDiscovery() // Stop service-side discovery if it's running
+
         // Stop and detach MediaProjection
         try {
             mediaProjection?.unregisterCallback(mediaProjectionCallback)
@@ -182,6 +244,9 @@ class ScreenCastingService : Service() {
         // Stop and release MediaPlayer
         mediaPlayer?.let { player ->
             try {
+                if (player.renderer != null) { // Important: Check if renderer is set before trying to operate on it
+                    player.setRenderer(null) // Detach renderer
+                }
                 if (player.isPlaying) {
                     player.stop()
                 }
@@ -205,9 +270,11 @@ class ScreenCastingService : Service() {
         }
         libVLC = null // Nullify after release
 
-        // Clear renderer item from holder
+        // Clear renderer item from holder and local target
         currentRendererItem = null
-        RendererHolder.selectedRendererName = null
+        targetRendererName = null
+        targetRendererType = -1
+        RendererHolder.selectedRendererName = null // Also clear the global holder
         RendererHolder.selectedRendererType = -1
 
         Log.d(TAG, "Casting internals stopped and resources released.")
