@@ -17,7 +17,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
-import android.content.Intent // Added for Intent.URI_INTENT_SCHEME
+// android.content.Intent // Added for Intent.URI_INTENT_SCHEME - Removed duplicate
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Surface
