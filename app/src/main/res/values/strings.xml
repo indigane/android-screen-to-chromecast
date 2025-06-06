@@ -14,4 +14,13 @@
     <string name="casting_notification_title">Screen Casting Active</string>
     <string name="casting_notification_text">Your screen is being cast.</string>
     <string name="stop_casting_action">Stop Casting</string>
+
+    <string name="searching_for_device">Searching for %1$s...</string>
+    <string name="casting_to_device">Casting to %1$s</string>
+    <string name="failed_to_find_renderer">Could not find device: %1$s</string>
+    <string name="error_starting_discovery">Error starting discovery</string>
+    <string name="error_device_disconnected_format">Lost connection to %1$s</string>
+    <string name="invalid_cast_data_title">Casting Error</string>
+    <string name="invalid_cast_data_message">Could not start casting. Invalid data received.</string>
+    <string name="failed_to_connect_to_device">Failed to connect to %1$s</string>
 </resources>
