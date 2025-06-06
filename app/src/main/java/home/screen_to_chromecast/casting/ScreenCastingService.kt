@@ -177,7 +177,8 @@ class ScreenCastingService : Service() {
                     val itemDisplayName = item.displayName ?: itemName
                     Log.d(TAG, "Service Discovery: Renderer Added - $itemDisplayName (Name: $itemName, Type: ${item.type})")
 
-                    if (item.name == targetRendererName && item.type == targetRendererType) {
+                    val currentTargetType: Int = targetRendererType // Ensure targetRendererType is treated as Int
+                    if (item.name == targetRendererName && item.type == currentTargetType) {
                         Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
                         currentRendererItem = item
                         mediaPlayer?.setRenderer(currentRendererItem)
@@ -244,10 +245,7 @@ class ScreenCastingService : Service() {
         // Stop and release MediaPlayer
         mediaPlayer?.let { player ->
             try {
-                // Ensure player.renderer is accessed correctly and player.setRenderer is called correctly
-                if (player.renderer != null) {
-                    player.setRenderer(null) // Detach any existing renderer
-                }
+                player.setRenderer(null) // Attempt to detach renderer; safe if none is set.
                 if (player.isPlaying) {
                     player.stop()
                 }
