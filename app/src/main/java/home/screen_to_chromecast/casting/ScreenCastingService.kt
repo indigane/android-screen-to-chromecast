@@ -51,6 +51,8 @@ class ScreenCastingService : Service() {
     @Volatile
     private var isCasting = false
 
+    private val mediaProjectionCallback = MediaProjectionCallback()
+
     override fun onCreate() {
         super.onCreate()
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -126,7 +128,7 @@ class ScreenCastingService : Service() {
                 isCasting = true
 
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
-                mediaProjection?.registerCallback(MediaProjectionCallback(), null)
+                mediaProjection?.registerCallback(mediaProjectionCallback, null)
 
                 mediaPlayer?.setRenderer(currentRendererItem)
                 // mediaPlayer?.play() // This would need a valid media.
@@ -153,65 +155,82 @@ class ScreenCastingService : Service() {
     }
 
     private fun stopCastingInternals() {
-        if (!isCasting && mediaProjection == null && (mediaPlayer == null || mediaPlayer?.isPlaying == false)) {
-             if (isCasting) {
-                isCasting = false
-            } else {
-                 if (this::class.java.simpleName == "ScreenCastingService") {
-                     stopForeground(true)
-                     stopSelf()
-                 }
-                 return
+        // More comprehensive check for idempotency
+        if (!isCasting && mediaProjection == null && mediaPlayer == null && libVLC == null) {
+            Log.d(TAG, "stopCastingInternals: Already stopped or nothing to do.")
+            // Ensure service stops if it's somehow still running without active resources
+            if (this::class.java.simpleName == "ScreenCastingService") {
+                stopForeground(true)
+                stopSelf()
             }
-        }
-        if (!isCasting) {
-             stopForeground(true)
-             stopSelf()
-             return
+            return
         }
 
         Log.d(TAG, "Stopping casting internals...")
-        isCasting = false
+        isCasting = false // Set casting flag to false immediately
 
-        // Removed encodingThread, nalUnitQueue, spsPpsData logic
-        // Removed virtualDisplay, mediaCodec, inputSurface logic
-        // These were related to screen capture encoding, which is no longer done by this service.
-
-        // Removed mediaCodec, inputSurface, and virtualDisplay cleanup logic
-
-        try { mediaProjection?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping MediaProjection",e) }
+        // Stop and detach MediaProjection
+        try {
+            mediaProjection?.unregisterCallback(mediaProjectionCallback)
+            mediaProjection?.stop()
+            Log.d(TAG, "MediaProjection stopped and callback unregistered.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping MediaProjection or unregistering callback", e)
+        }
         mediaProjection = null
 
-        mediaPlayer?.apply {
-            if (this.isPlaying) {
-                this.stop()
+        // Stop and release MediaPlayer
+        mediaPlayer?.let { player ->
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+                player.setEventListener(null)
+                Log.d(TAG, "Releasing MediaPlayer instance.")
+                player.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error operating on or releasing MediaPlayer: ${e.message}", e)
             }
-            this.setEventListener(null)
         }
+        mediaPlayer = null // Nullify after operations
 
+        // Release LibVLC
+        libVLC?.let { vlc ->
+            try {
+                Log.d(TAG, "Releasing LibVLC instance.")
+                vlc.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing LibVLC: ${e.message}", e)
+            }
+        }
+        libVLC = null // Nullify after release
+
+        // Clear renderer item from holder
         currentRendererItem = null
         RendererHolder.selectedRendererName = null
         RendererHolder.selectedRendererType = -1
 
-        Log.d(TAG, "Casting internals stopped.")
+        Log.d(TAG, "Casting internals stopped and resources released.")
         stopForeground(true)
         stopSelf()
     }
 
+    // stopCastingAndSelf() can be removed if not used externally, or kept if it provides a useful alias.
+    // For now, assuming it might be called from somewhere, though typically ACTION_STOP_CASTING -> stopCastingInternals is the path.
     private fun stopCastingAndSelf() {
+        Log.d(TAG, "stopCastingAndSelf called, redirecting to stopCastingInternals.")
         stopCastingInternals()
     }
 
     override fun onDestroy() {
-        Log.d(TAG, "ScreenCastingService onDestroy.")
+        Log.d(TAG, "ScreenCastingService onDestroy. Ensuring casting internals are stopped.")
+        // Most cleanup is now in stopCastingInternals.
+        // Call it to ensure everything is released if onDestroy is called directly
+        // e.g. by system before stopCastingInternals was triggered by an explicit ACTION_STOP_CASTING.
         stopCastingInternals()
-        mediaPlayer?.release()
-        mediaPlayer = null
-        libVLC?.release()
-        libVLC = null
-        RendererHolder.selectedRendererName = null
-        RendererHolder.selectedRendererType = -1
+        // RendererHolder clearing is also in stopCastingInternals, so no need to repeat here.
         super.onDestroy()
+        Log.d(TAG, "ScreenCastingService fully destroyed.")
     }
 
     private fun createNotificationChannel() {
