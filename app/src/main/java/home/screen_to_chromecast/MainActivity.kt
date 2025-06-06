@@ -84,7 +84,8 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
                 selectedRenderer = clickedRenderer
                 RendererHolder.selectedRendererName = clickedRenderer.name
-                RendererHolder.selectedRendererType = clickedRenderer.type
+                // Aggressively convert type to Int, assuming clickedRenderer.type might be seen as String
+                RendererHolder.selectedRendererType = clickedRenderer.type.toString().toIntOrNull() ?: -1
 
                 // Use direct field access as confirmed by Javadoc for 3.6.1
                 val clickedRendererName = clickedRenderer.name ?: "Unknown Name"
