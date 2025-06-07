@@ -24,9 +24,9 @@ jobs:
 
       # New step for NDK setup
       - name: Set up Android NDK
-        uses: npepinpe/setup-ndk@v1
+        uses: android-actions/setup-ndk@v1 # Corrected action
         with:
-          ndk_version: r25c # Corresponds to 25.2.9519653
+          ndk-version: r25c # Corrected parameter name for this action
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
