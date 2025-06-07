@@ -108,6 +108,7 @@ class ScreenCastingService : Service() {
 
 
     override fun onCreate() {
+        Log.i(TAG, "ScreenCastingService onCreate called.") // Added Log
         super.onCreate()
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val libVlcArgs = ArrayList<String>()
@@ -138,8 +139,16 @@ class ScreenCastingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "ScreenCastingService onStartCommand called with action: ${intent?.action}, intent extras: ${intent?.extras?.let { bundle -> bundle.keySet().joinToString { key -> "$key=${bundle.get(key)}" } } ?: "null"}")
         val action = intent?.action
-        Log.d(TAG, "onStartCommand received with action: $action")
+        // Log.d(TAG, "onStartCommand received with action: $action") // Replaced by the more detailed log above
+
+        if (intent?.action == ACTION_START_CASTING) {
+            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
+            val resultDataPresent = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) != null
+            // Logging RendererHolder details here before they are locally assigned in the 'when' block
+            Log.d(TAG, "ACTION_START_CASTING intent received: resultCode=$resultCode, resultDataPresent=$resultDataPresent, current TargetRendererName=${RendererHolder.selectedRendererName}, current TargetRendererType=${RendererHolder.selectedRendererType}")
+        }
 
         when (action) {
             ACTION_START_CASTING -> {
