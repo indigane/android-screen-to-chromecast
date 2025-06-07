@@ -6,53 +6,50 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 
-class HLSServer(port: Int, private val hlsDirectory: File) : NanoHTTPD(port) {
-
-    companion object {
-        private const val TAG = "HLSServer"
-        const val MIME_TYPE_M3U8 = "application/vnd.apple.mpegurl"
-        const val MIME_TYPE_TS = "video/mp2t"
-    }
+class HLSServer(port: Int, private val hlsFilesDir: File) : NanoHTTPD(port) {
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
-        Log.d(TAG, "Received request for URI: $uri")
+        Log.d(TAG, "HLSServer received request for URI: $uri")
 
-        if (uri == null) {
-            Log.e(TAG, "URI is null")
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found: URI is null")
+        // Remove leading '/' if present, handle empty or null URI
+        val requestedPath = uri?.takeIf { it.isNotEmpty() }?.removePrefix("/") ?: ""
+        if (requestedPath.isEmpty()) {
+            Log.e(TAG, "Requested URI is empty or null after processing.")
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found: Invalid URI.")
         }
 
-        val fileName = uri.substring(1) // Remove leading slash
+        val requestedFile = File(hlsFilesDir, requestedPath)
 
-        return when {
-            uri.endsWith(".m3u8") -> serveFile(fileName, MIME_TYPE_M3U8)
-            uri.endsWith(".ts") -> serveFile(fileName, MIME_TYPE_TS)
-            else -> {
-                Log.w(TAG, "Unrecognized URI: $uri")
-                newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found: $uri")
-            }
-        }
-    }
-
-    private fun serveFile(fileName: String, mimeType: String): Response {
-        val file = File(hlsDirectory, fileName)
-        Log.d(TAG, "Attempting to serve file: ${file.absolutePath} with MIME type: $mimeType")
-
-        if (!file.exists()) {
-            Log.e(TAG, "File not found: ${file.absolutePath}")
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found: $fileName")
+        if (!requestedFile.exists() || !requestedFile.isFile || !requestedFile.startsWith(hlsFilesDir)) {
+            // Security check: Ensure the requested file is within the hlsFilesDir
+            Log.e(TAG, "File not found, not a file, or outside designated directory: ${requestedFile.absolutePath}")
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found.")
         }
 
         return try {
-            val fis = FileInputStream(file)
-            newFixedLengthResponse(Response.Status.OK, mimeType, fis, file.length())
+            val mimeType = when {
+                requestedPath.endsWith(".m3u8") -> "application/vnd.apple.mpegurl"
+                requestedPath.endsWith(".ts") -> "video/mp2t"
+                else -> {
+                    Log.w(TAG, "Attempt to serve file with unrecognized extension: $requestedPath")
+                    "application/octet-stream" // Fallback, though ideally only .m3u8 and .ts are served
+                }
+            }
+            val fis = FileInputStream(requestedFile)
+            // Use newChunkedResponse for potentially large .ts files if issues arise with newFixedLengthResponse
+            // For now, newFixedLengthResponse should be fine as segments are small.
+            newFixedLengthResponse(Response.Status.OK, mimeType, fis, requestedFile.length())
         } catch (e: FileNotFoundException) {
-            Log.e(TAG, "File not found exception (should have been caught by exists check): ${file.absolutePath}", e)
-            newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found: $fileName (Exception)")
+            Log.e(TAG, "FileNotFoundException for: ${requestedFile.absolutePath}", e)
+            newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found.")
         } catch (e: Exception) {
-            Log.e(TAG, "Error serving file: ${file.absolutePath}", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Internal Server Error")
+            Log.e(TAG, "Error serving file: ${requestedFile.absolutePath}", e)
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Server error.")
         }
+    }
+
+    companion object {
+        private const val TAG = "HLSServer"
     }
 }

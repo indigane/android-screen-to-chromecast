@@ -64,9 +64,6 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.fragment:fragment-ktx:1.7.1")
 
-    // NanoHTTPD for HLS streaming
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
-
     // Testing libraries
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

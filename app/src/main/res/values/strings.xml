@@ -15,7 +15,6 @@
     <string name="casting_notification_text">Your screen is being cast.</string>
     <string name="stop_casting_action">Stop Casting</string>
 
-    <string name="preparing_stream">Preparing stream…</string>
     <string name="searching_for_device">Searching for %1$s...</string>
     <string name="casting_to_device">Casting to %1$s</string>
     <string name="failed_to_find_renderer">Could not find device: %1$s</string>
@@ -24,4 +23,27 @@
     <string name="invalid_cast_data_title">Casting Error</string>
     <string name="invalid_cast_data_message">Could not start casting. Invalid data received.</string>
     <string name="failed_to_connect_to_device">Failed to connect to %1$s</string>
+
+    <!-- Strings for ScreenCastingService -->
+    <string name="error_invalid_casting_parameters">Error: Invalid casting parameters.</string>
+    <string name="preparing_stream">Preparing stream…</string>
+    <string name="error_hls_directory">Error: HLS files directory is not properly set.</string>
+    <string name="error_hls_directory_creation_failed">Error: Failed to create HLS stream directory.</string>
+    <string name="error_starting_hls_server">Error: Failed to start stream server.</string>
+    <string name="error_mediacodec_setup">Error: Failed to set up screen encoder.</string>
+    <string name="error_starting_encoding">Error: Failed to start screen encoding.</string>
+    <string name="error_encoding_loop">Error: Problem during screen stream encoding.</string>
+    <string name="error_libvlc_not_ready">Error: VLC Player not ready.</string>
+    <string name="unknown_device_placeholder">Unknown device</string>
+    <!-- error_starting_discovery is already present -->
+    <string name="error_network_config">Error: Network configuration issue. Please check Wi-Fi.</string>
+    <string name="error_device_disconnected">Error: Device %1$s disconnected.</string>
+
+    <!-- Ensure existing notification channel strings are suitable, updating if needed -->
+    <string name="notification_channel_name">Screen Casting</string> <!-- Slightly more user-friendly -->
+    <string name="notification_channel_description">Notification for active screen casting session</string>
+    <string name="casting_notification_title">Casting Screen</string> <!-- More active verb -->
+    <!-- stop_casting_action is already present -->
+    <!-- searching_for_device is already present -->
+    <!-- casting_to_device is already present -->
 </resources>
