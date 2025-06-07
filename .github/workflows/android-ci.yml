@@ -24,9 +24,10 @@ jobs:
 
       # New step for NDK setup
       - name: Set up Android NDK
-        uses: android-actions/setup-ndk@v1 # Corrected action
+        uses: nttld/setup-ndk@v1.5.0 # Corrected action and version
         with:
-          ndk-version: r25c # Corrected parameter name for this action
+          ndk-version: r25c
+          local-cache: true # Enable local caching for the NDK
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
