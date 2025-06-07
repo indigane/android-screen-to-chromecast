@@ -23,4 +23,6 @@
     <string name="invalid_cast_data_title">Casting Error</string>
     <string name="invalid_cast_data_message">Could not start casting. Invalid data received.</string>
     <string name="failed_to_connect_to_device">Failed to connect to %1$s</string>
+    <string name="error_media_projection_setup">Error: Could not prepare screen for casting</string>
+    <string name="error_media_projection_unavailable">Error: Screen data not available for casting</string>
 </resources>

@@ -30,24 +30,17 @@ import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
-// IMediaInput and H264StreamInput removed as per instructions
 import java.io.IOException
-// ArrayBlockingQueue, TimeUnit, and thread are no longer needed
-// import java.util.concurrent.ArrayBlockingQueue
-// import java.util.concurrent.TimeUnit
-// import kotlin.concurrent.thread
 
 class ScreenCastingService : Service() {
 
     private var mediaProjectionManager: MediaProjectionManager? = null
     private var mediaProjection: MediaProjection? = null
-    // Removed virtualDisplay, mediaCodec, and inputSurface field declarations
 
     private var libVLC: ILibVLC? = null
     private var mediaPlayer: MediaPlayer? = null
     private var currentRendererItem: RendererItem? = null
 
-    // Removed nalUnitQueue, encodingThread, spsPpsData
     @Volatile
     private var isCasting = false
 
@@ -186,6 +179,33 @@ class ScreenCastingService : Service() {
                         // mediaPlayer?.play()
                         updateNotification(getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device"))
                         stopServiceDiscovery() // Found our target, no need to discover further
+
+                        if (mediaProjection != null && libVLC != null) {
+                            Log.d(TAG, "Preparing media from MediaProjection.")
+                            val media = libVLC!!.getMediaFactory()?.fromMediaProjection(mediaProjection!!)
+                            if (media != null) {
+                                mediaPlayer?.setMedia(media)
+                                // It's important to release the media object after it's been set to the player
+                                // to avoid resource leaks, as per LibVLC best practices.
+                                // The MediaPlayer takes its own reference.
+                                media.release()
+                                Log.d(TAG, "Media set on MediaPlayer. Attempting to play.")
+                                mediaPlayer?.play()
+                                // Notification is already: "Casting to [device]"
+                                // updateNotification(getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device"))
+                            } else {
+                                Log.e(TAG, "Failed to create Media from MediaProjection.")
+                                updateNotification(getString(R.string.error_media_projection_setup)) // Assumes this string exists
+                                stopCastingInternals() // Stop if media cannot be prepared
+                            }
+                        } else {
+                            Log.e(TAG, "MediaProjection or LibVLC is null, cannot prepare media for casting.")
+                            // Potentially update notification here too, though if mediaProjection is null,
+                            // it might have been caught earlier in onStartCommand.
+                            // If libVLC is null, that's a more fundamental issue.
+                            updateNotification(getString(R.string.error_media_projection_unavailable)) // Assumes this string exists
+                            stopCastingInternals()
+                        }
                     }
                 }
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
@@ -353,15 +373,5 @@ class ScreenCastingService : Service() {
 
         private const val NOTIFICATION_ID = 1237
         private const val NOTIFICATION_CHANNEL_ID = "ScreenCastingChannel"
-
-        // Removed unused video and encoding constants
-        // private const val VIDEO_WIDTH = 1280
-        // private const val VIDEO_HEIGHT = 720
-        // private const val VIDEO_BITRATE = 2 * 1024 * 1024 // 2 Mbps
-        // private const val VIDEO_FRAME_RATE = 30
-        // private const val I_FRAME_INTERVAL_SECONDS = 1
-        // private const val CODEC_TIMEOUT_US = 10000L
-        // private const val NAL_QUEUE_CAPACITY = 120
-        // private const val NAL_QUEUE_TIMEOUT_MS = 100L
     }
 }
