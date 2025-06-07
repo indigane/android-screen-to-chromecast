@@ -165,7 +165,8 @@ class ScreenCastingService : Service() {
                 if (resultCode != Activity.RESULT_OK || resultData == null || this.targetRendererName == null || this.targetRendererType == null) {
                     Log.e(TAG, "Invalid data for starting cast. Stopping service.")
                     updateNotification(getString(R.string.error_invalid_casting_parameters))
-                    RendererHolder.clearSelection() // Clear selection in holder
+                    RendererHolder.selectedRendererName = null
+                    RendererHolder.selectedRendererType = null
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -423,7 +424,7 @@ class ScreenCastingService : Service() {
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemAdded -> {
                     if (item.name == targetRendererName && item.type == targetRendererType) {
                         Log.i(TAG, "Target renderer '${targetRendererName}' found by service discoverer!")
-                        currentRendererItem = RendererItem(item.name, item.type, item.displayName, item.iconUri, item.flags, item.category) // Retain by creating new
+                        currentRendererItem = item // Assign event.item directly
                         mediaPlayer?.setRenderer(currentRendererItem)
 
                         val deviceIp = getDeviceIpAddress()
@@ -542,7 +543,8 @@ class ScreenCastingService : Service() {
         currentRendererItem = null
         targetRendererName = null
         targetRendererType = null
-        RendererHolder.clearSelection()
+        RendererHolder.selectedRendererName = null
+        RendererHolder.selectedRendererType = null
 
         stopServiceDiscovery()
 

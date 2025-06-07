@@ -2,6 +2,8 @@ package home.screen_to_chromecast.casting
 
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoHTTPD.IHTTPSession // Explicit import
+import fi.iki.elonen.NanoHTTPD.Response     // Explicit import
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
