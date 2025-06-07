@@ -10,18 +10,16 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaFormat
+import android.media.MediaRecorder // Added for MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.util.DisplayMetrics
+import android.util.DisplayMetrics // Keep this for screenDensity
 import android.util.Log
-import android.view.Surface
-import android.view.WindowManager
+// import android.view.Surface // No longer needed for MediaCodec
+import android.view.WindowManager // May not be needed if only for density
 import androidx.core.app.NotificationCompat
 import home.screen_to_chromecast.MainActivity
 import home.screen_to_chromecast.R
@@ -32,14 +30,14 @@ import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
 import java.io.File
-import java.io.FileOutputStream
+// import java.io.FileOutputStream // No longer needed for direct segment writing
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import fi.iki.elonen.NanoHTTPD // Added for HLSServer start method
+import fi.iki.elonen.NanoHTTPD
 import kotlin.math.max
 
-// Top-level function for IP address, as implemented previously
+// Top-level function for IP address
 fun getDeviceIpAddress(): String? {
     try {
         val networkInterfaces = NetworkInterface.getNetworkInterfaces()
@@ -50,7 +48,6 @@ fun getDeviceIpAddress(): String? {
                 while (enumIpAddr.hasMoreElements()) {
                     val inetAddress = enumIpAddr.nextElement()
                     if (!inetAddress.isLoopbackAddress && inetAddress is Inet4Address) {
-                        // Prefer site-local addresses
                         if (inetAddress.isSiteLocalAddress) {
                            return inetAddress.hostAddress
                         }
@@ -58,7 +55,6 @@ fun getDeviceIpAddress(): String? {
                 }
             }
         }
-        // Fallback: If no site-local found, take the first non-loopback IPv4
         val networkInterfacesFallback = NetworkInterface.getNetworkInterfaces()
         while (networkInterfacesFallback.hasMoreElements()) {
             val intf = networkInterfacesFallback.nextElement()
@@ -102,26 +98,20 @@ class ScreenCastingService : Service() {
     private var hlsFilesDir: File? = null
     private val hlsPort = 8088
 
-    // HLS Encoding fields
-    private var mediaCodec: MediaCodec? = null
-    private var inputSurface: Surface? = null
+    // MediaRecorder HLS fields
+    private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var encodingThread: Thread? = null
-    @Volatile private var isEncoding = false
-    private var spsPpsData: ByteArray? = null
+    @Volatile private var isEncoding = false // Flag to control overall encoding process
     private var hlsPlaylistFile: File? = null
-    private var tsSegmentFile: File? = null // Current segment file being written
-    private var currentSegmentFileOutputStream: FileOutputStream? = null
     private var tsSegmentIndex = 0L
-    private var currentSegmentStartTimeUs: Long = -1L // Presentation timestamp of the first frame in the current segment
-    private var lastKnownPtsUs: Long = 0L // To track presentation timestamps
+    private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
+
 
     override fun onCreate() {
         super.onCreate()
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val libVlcArgs = ArrayList<String>()
         libVlcArgs.add("--no-sub-autodetect-file")
-        // libVlcArgs.add("--verbose=2") // For more detailed VLC logs if needed
 
         try {
             libVLC = LibVLC(this, libVlcArgs)
@@ -137,14 +127,14 @@ class ScreenCastingService : Service() {
         if (!hlsFilesDir!!.exists()) {
             if(!hlsFilesDir!!.mkdirs()){
                 Log.e(TAG, "Failed to create HLS directory: ${hlsFilesDir?.absolutePath}")
-                // Handle error: update notification, stop service
                 updateNotification(getString(R.string.error_hls_directory_creation_failed))
                 stopSelf()
                 return
             }
         }
         hlsPlaylistFile = File(hlsFilesDir, "playlist.m3u8")
-        Log.d(TAG, "ScreenCastingService created. HLS dir: ${hlsFilesDir?.absolutePath}")
+        screenDensity = resources.displayMetrics.densityDpi // Get screen density once
+        Log.d(TAG, "ScreenCastingService created. HLS dir: ${hlsFilesDir?.absolutePath}, Density: $screenDensity")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -175,13 +165,14 @@ class ScreenCastingService : Service() {
                 isCasting = true
                 currentRendererItem = null
 
-                // Call startForeground before getMediaProjection as required for Android Q+ background starts
                 startForeground(NOTIFICATION_ID, createNotification(getString(R.string.preparing_stream)))
 
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(mediaProjectionCallback, null)
 
-                if (!setupMediaCodecAndVirtualDisplay()) {
+                if (mediaProjection == null) {
+                    Log.e(TAG, "MediaProjection could not be obtained. Stopping.")
+                    updateNotification("Error: Failed to start screen capture session.")
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
@@ -190,7 +181,7 @@ class ScreenCastingService : Service() {
                     try {
                         hlsFilesDir?.let { dir ->
                             hlsServer = HLSServer(hlsPort, dir)
-                            hlsServer?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false) // false for not as daemon
+                            hlsServer?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                             Log.d(TAG, "HLS server started on port $hlsPort, serving from ${dir.absolutePath}")
                         } ?: run {
                             Log.e(TAG, "HLS files directory is null. Cannot start HLS Server.")
@@ -206,16 +197,13 @@ class ScreenCastingService : Service() {
                     }
                 }
 
-                // Initialize/Reset HLS variables before starting encoding
+                isEncoding = true
                 tsSegmentIndex = 0L
-                currentSegmentStartTimeUs = -1L
-                lastKnownPtsUs = 0L
-                spsPpsData = null // Clear previous SPS/PPS
-                closeCurrentSegmentFile() // Ensure any previous segment file is closed
-                hlsPlaylistFile?.delete() // Delete old playlist to start fresh
+                hlsPlaylistFile?.delete()
+                updateHlsPlaylist(finished = false) // Create initial empty playlist
 
-
-                if (!startEncoding()) {
+                if (!startNewMediaRecorderSegment()) {
+                    Log.e(TAG, "Failed to start initial MediaRecorder segment.")
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
@@ -229,172 +217,91 @@ class ScreenCastingService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun setupMediaCodecAndVirtualDisplay(): Boolean {
-        Log.d(TAG, "Setting up MediaCodec and VirtualDisplay...")
+    private fun startNewMediaRecorderSegment(): Boolean {
+        if (!isEncoding || mediaProjection == null) {
+            Log.w(TAG, "startNewMediaRecorderSegment called but isEncoding is false or mediaProjection is null.")
+            return false
+        }
 
-        // Get screen density directly from resources
-        val screenDensity = resources.displayMetrics.densityDpi
-        Log.d(TAG, "Screen density obtained: $screenDensity")
+        // Clean up previous MediaRecorder and VirtualDisplay
+        mediaRecorder?.apply {
+            setOnInfoListener(null)
+            setOnErrorListener(null)
+            try { stop() } catch (e: RuntimeException) { Log.e(TAG, "MediaRecorder stop failed", e) } // Catch RuntimeException for stop
+            reset()
+            release()
+        }
+        mediaRecorder = null
+        virtualDisplay?.release()
+        virtualDisplay = null
 
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, VIDEO_WIDTH, VIDEO_HEIGHT)
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE)
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE)
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL_SECONDS)
+        tsSegmentIndex++
+        val currentSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
+        Log.i(TAG, "Starting new MediaRecorder segment: index=$tsSegmentIndex, file=${currentSegmentFile.absolutePath}")
+
+        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
         try {
-            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            inputSurface = mediaCodec?.createInputSurface() ?: throw IOException("MediaCodec input surface creation failed.")
+            mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_2_TS)
+            mediaRecorder?.setOutputFile(currentSegmentFile.absolutePath)
+            mediaRecorder?.setVideoEncodingBitRate(VIDEO_BITRATE)
+            mediaRecorder?.setVideoFrameRate(VIDEO_FRAME_RATE)
+            mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
+            mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
 
-            if (mediaProjection == null) {
-                 Log.e(TAG, "MediaProjection is null, cannot create VirtualDisplay.")
-                 throw IOException("MediaProjection is null.")
+            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add buffer
+            mediaRecorder?.setOnInfoListener { _, what, _ ->
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    handleSegmentCompletion()
+                }
+            }
+            mediaRecorder?.setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "MediaRecorder error: what=$what, extra=$extra")
+                updateNotification(getString(R.string.error_mediarecorder, what, extra))
+                stopCastingInternals()
             }
 
+            mediaRecorder?.prepare()
+            val recorderSurface = mediaRecorder?.surface ?: throw IOException("MediaRecorder surface is null after prepare")
+
             virtualDisplay = mediaProjection?.createVirtualDisplay("ScreenCapture", VIDEO_WIDTH, VIDEO_HEIGHT, screenDensity,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, inputSurface, null, null)
-                ?: throw IOException("VirtualDisplay creation failed.")
-            Log.d(TAG, "MediaCodec and VirtualDisplay configured successfully.")
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, recorderSurface, null, null)
+                ?: throw IOException("VirtualDisplay creation failed for MediaRecorder")
+
+            mediaRecorder?.start()
+            Log.i(TAG, "MediaRecorder started for segment $tsSegmentIndex")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to setup MediaCodec or VirtualDisplay", e)
-            updateNotification(getString(R.string.error_mediacodec_setup))
+            Log.e(TAG, "Failed to prepare or start MediaRecorder for segment $tsSegmentIndex", e)
+            updateNotification(getString(R.string.error_mediarecorder_prepare_start, tsSegmentIndex))
+            mediaRecorder?.release()
+            mediaRecorder = null
+            virtualDisplay?.release()
+            virtualDisplay = null
             return false
         }
     }
 
-    private fun startEncoding(): Boolean {
-        Log.d(TAG, "Attempting to start encoding...")
-        return try {
-            mediaCodec?.start()
-            isEncoding = true
-            encodingThread = Thread { encodeLoop() }
-            encodingThread?.name = "ScreenCastEncodingThread"
-            encodingThread?.start()
-            Log.d(TAG, "Encoding thread started.")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start MediaCodec encoding", e)
-            updateNotification(getString(R.string.error_starting_encoding))
-            isEncoding = false
-            false
+    private fun handleSegmentCompletion() {
+        Log.i(TAG, "Segment $tsSegmentIndex completed (max duration reached).")
+
+        // The current MediaRecorder and its VirtualDisplay will be reset/released by startNewMediaRecorderSegment
+        // or by stopCastingInternals if isEncoding becomes false.
+        // We must call updateHlsPlaylist *before* startNewMediaRecorderSegment increments tsSegmentIndex
+        if (tsSegmentIndex > 0) {
+            updateHlsPlaylist()
         }
-    }
 
-    private fun encodeLoop() {
-        Log.d(TAG, "Encode loop started.")
-        val bufferInfo = MediaCodec.BufferInfo()
-
-        while (isEncoding) {
-            try {
-                val outputBufferIndex = mediaCodec?.dequeueOutputBuffer(bufferInfo, CODEC_TIMEOUT_US) ?: -1
-
-                if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    mediaCodec?.outputFormat?.also { format ->
-                        format.getByteBuffer("csd-0")?.let { csd0 ->
-                            format.getByteBuffer("csd-1")?.let { csd1 ->
-                                spsPpsData = ByteArray(csd0.remaining() + csd1.remaining()).apply {
-                                    csd0.get(this, 0, csd0.remaining())
-                                    csd1.get(this, csd0.remaining(), csd1.remaining())
-                                }
-                                Log.i(TAG, "SPS/PPS data captured: ${spsPpsData?.size} bytes.")
-                            }
-                        }
-                    }
-                } else if (outputBufferIndex >= 0) {
-                    val encodedData = mediaCodec?.getOutputBuffer(outputBufferIndex)
-                    if (encodedData != null) {
-                        var ptsUs = bufferInfo.presentationTimeUs
-                        if (ptsUs <= lastKnownPtsUs) { // Ensure monotonically increasing PTS
-                            ptsUs = lastKnownPtsUs + 1
-                            // Log.w(TAG, "Adjusted PTS from ${bufferInfo.presentationTimeUs} to $ptsUs")
-                        }
-                        lastKnownPtsUs = ptsUs
-
-                        val isKeyFrame = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-                        var createNewSegment = false
-
-                        if (currentSegmentFileOutputStream == null) { // First segment
-                            if (isKeyFrame) {
-                                createNewSegment = true
-                                Log.i(TAG, "First segment: Starting with key frame.")
-                            } else {
-                                Log.w(TAG, "First frame is not a key frame. Skipping until a key frame is found.")
-                                mediaCodec?.releaseOutputBuffer(outputBufferIndex, false)
-                                continue // Skip this frame
-                            }
-                        } else { // Not the first segment
-                            val segmentDurationUs = ptsUs - currentSegmentStartTimeUs
-                            if (segmentDurationUs >= SEGMENT_DURATION_SECONDS * 1_000_000L && isKeyFrame) {
-                                createNewSegment = true
-                            }
-                        }
-
-                        if (createNewSegment) {
-                            if (currentSegmentFileOutputStream != null) {
-                                closeCurrentSegmentFile() // Finalize the previous segment (segment N)
-                                // tsSegmentIndex still refers to segment N here
-                                Log.i(TAG, "Updating playlist for closed segment. Current index: $tsSegmentIndex. Previous segment closed.")
-                                updateHlsPlaylist() // Update playlist to include segment N
-                            }
-
-                            // Prepare for the new segment (segment N+1)
-                            tsSegmentIndex++
-                            tsSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
-                            currentSegmentFileOutputStream = FileOutputStream(tsSegmentFile!!)
-                            currentSegmentStartTimeUs = ptsUs
-                            Log.i(TAG, "Starting new segment: index=$tsSegmentIndex, file=${tsSegmentFile?.name}, startTimeUs=$currentSegmentStartTimeUs, isKeyFrame=$isKeyFrame")
-
-                            spsPpsData?.let {
-                                currentSegmentFileOutputStream?.write(it)
-                                Log.d(TAG, "Wrote SPS/PPS to new segment ${tsSegmentFile?.name}")
-                            }
-                            // Playlist is NOT updated here for the newly opened segment
-                        }
-
-                        if (currentSegmentFileOutputStream != null) {
-                            val chunk = ByteArray(bufferInfo.size)
-                            encodedData.position(bufferInfo.offset)
-                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                            encodedData.get(chunk)
-                            currentSegmentFileOutputStream?.write(chunk)
-                        } else if (!createNewSegment) {
-                            // This case should ideally not be hit if logic is correct for first segment.
-                            Log.w(TAG, "Skipping frame as segment not initialized (not a keyframe for first segment).")
-                        }
-
-                        mediaCodec?.releaseOutputBuffer(outputBufferIndex, false)
-                    }
-                } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    try { Thread.sleep(10) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); break }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception in encodeLoop: ${e.message}", e)
-                if (isEncoding) {
-                     updateNotification(getString(R.string.error_encoding_loop))
-                }
-                isEncoding = false
+        if (isEncoding) {
+            if (!startNewMediaRecorderSegment()) {
+                Log.e(TAG, "Failed to start next MediaRecorder segment after completion of segment $tsSegmentIndex.")
+                stopCastingInternals()
             }
+        } else {
+             Log.i(TAG, "isEncoding is false in handleSegmentCompletion, performing final playlist update.")
+             if (tsSegmentIndex > 0) updateHlsPlaylist(finished = true)
         }
-
-        // Cleanup after loop
-        closeCurrentSegmentFile()
-        if (tsSegmentIndex > 0 || hlsPlaylistFile?.exists() == false ) { // Write playlist if any segments were made or if no playlist exists yet
-            updateHlsPlaylist(finished = true)
-        }
-        Log.i(TAG, "Encode loop finished. Final playlist written.")
-    }
-
-    private fun closeCurrentSegmentFile() {
-        try {
-            currentSegmentFileOutputStream?.flush()
-            currentSegmentFileOutputStream?.close()
-            Log.d(TAG, "Closed segment file: ${tsSegmentFile?.name ?: "N/A"}")
-        } catch (e: IOException) {
-            Log.e(TAG, "Error closing segment file output stream", e)
-        }
-        currentSegmentFileOutputStream = null
     }
 
     private fun updateHlsPlaylist(finished: Boolean = false) {
@@ -410,11 +317,16 @@ class ScreenCastingService : Service() {
                 writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
 
                 val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
-                val firstSegmentInPlaylist = if (tsSegmentIndex == 0L) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
+                // Ensure firstSegmentInPlaylist is at least 1 if tsSegmentIndex > 0, or 0 if tsSegmentIndex is 0
+                val firstSegmentInPlaylist = if (tsSegmentIndex == 0L && !finished) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
+
                 writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
-                if (tsSegmentIndex > 0L) {
-                    for (i in firstSegmentInPlaylist..tsSegmentIndex) {
+                if (tsSegmentIndex > 0L) { // Only list segments if at least one has been completed or is being written
+                    // For non-finished playlist, list up to current tsSegmentIndex
+                    // For finished playlist, list up to current tsSegmentIndex (which is the last completed one)
+                    val endSegment = tsSegmentIndex
+                    for (i in firstSegmentInPlaylist..endSegment) {
                         writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
                         writer.write("segment$i.ts\n")
                     }
@@ -423,14 +335,15 @@ class ScreenCastingService : Service() {
                 if (finished) {
                     writer.write("#EXT-X-ENDLIST\n")
                 }
-            } // Writer is automatically closed here
-            Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished. First segment in playlist: $firstSegmentInPlaylist")
+            }
+            Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
         } catch (e: IOException) {
             Log.e(TAG, "Error writing HLS playlist", e)
         }
     }
 
     private fun startServiceDiscovery() {
+        // ... (content of startServiceDiscovery - unchanged from previous state)
         if (libVLC == null) {
             Log.e(TAG, "LibVLC instance is null, cannot start service discovery.")
             updateNotification(getString(R.string.error_libvlc_not_ready))
@@ -453,6 +366,7 @@ class ScreenCastingService : Service() {
     }
 
     private fun stopServiceDiscovery() {
+        // ... (content of stopServiceDiscovery - unchanged)
         serviceRendererDiscoverer?.setEventListener(null)
         serviceRendererDiscoverer?.stop()
         serviceRendererDiscoverer = null
@@ -460,6 +374,7 @@ class ScreenCastingService : Service() {
     }
 
     private inner class ServiceRendererEventListener : org.videolan.libvlc.RendererDiscoverer.EventListener {
+        // ... (content of ServiceRendererEventListener - unchanged)
         override fun onEvent(event: org.videolan.libvlc.RendererDiscoverer.Event?) {
             if (libVLC == null || serviceRendererDiscoverer == null || event == null || !isCasting) {
                 return
@@ -469,7 +384,7 @@ class ScreenCastingService : Service() {
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemAdded -> {
                     if (item.name == targetRendererName && item.type == targetRendererType) {
                         Log.i(TAG, "Target renderer '${targetRendererName}' found by service discoverer!")
-                        currentRendererItem = item // Assign event.item directly
+                        currentRendererItem = item
                         mediaPlayer?.setRenderer(currentRendererItem)
 
                         val deviceIp = getDeviceIpAddress()
@@ -490,9 +405,9 @@ class ScreenCastingService : Service() {
                         }
 
                         val media = Media(libVLC, Uri.parse(hlsUrl))
-                        media.addOption(":network-caching=1000") // Reduced caching slightly
+                        media.addOption(":network-caching=1000")
                         media.addOption(":hls-timeout=10")
-                        media.addOption(":demux=hls") // Explicitly set HLS demuxer
+                        media.addOption(":demux=hls")
 
                         mediaPlayer?.setMedia(media)
                         media.release()
@@ -517,6 +432,7 @@ class ScreenCastingService : Service() {
     }
 
     private inner class MediaProjectionCallback : MediaProjection.Callback() {
+        // ... (content of MediaProjectionCallback - unchanged)
         override fun onStop() {
             Log.w(TAG, "MediaProjection session stopped by system or user.")
             if (isCasting) {
@@ -526,39 +442,34 @@ class ScreenCastingService : Service() {
     }
 
     private fun stopCastingInternals() {
-        if (!isCasting && mediaProjection == null && mediaPlayer == null && libVLC == null && !isEncoding && hlsServer == null) {
-            Log.d(TAG, "stopCastingInternals: Already stopped or nothing significant to do.")
-            stopForeground(true); stopSelf();
-            return
-        }
-        Log.i(TAG, "Stopping casting internals...") // Changed to info
+        Log.i(TAG, "Stopping casting internals...")
         isCasting = false
 
-        if (isEncoding) {
-            isEncoding = false
-            encodingThread?.interrupt()
-            try {
-                encodingThread?.join(1000)
-                Log.d(TAG, "Encoding thread joined.")
-            } catch (e: InterruptedException) {
-                Log.w(TAG, "Interrupted while joining encodingThread.", e)
-                Thread.currentThread().interrupt()
-            }
+        val wasEncoding = isEncoding
+        isEncoding = false
+
+        mediaRecorder?.setOnInfoListener(null)
+        mediaRecorder?.setOnErrorListener(null)
+        try {
+            mediaRecorder?.stop()
+            Log.d(TAG, "MediaRecorder stopped.")
+        } catch (e: RuntimeException) { // MediaRecorder.stop() can throw RuntimeException
+            Log.w(TAG, "MediaRecorder stop failed: ${e.message}")
         }
-        encodingThread = null
-
-        try { mediaCodec?.stop() } catch (e: IllegalStateException) { Log.e(TAG, "MediaCodec stop error", e)}
-        mediaCodec?.release()
-        mediaCodec = null
-
-        inputSurface?.release()
-        inputSurface = null
+        mediaRecorder?.reset()
+        mediaRecorder?.release()
+        mediaRecorder = null
 
         virtualDisplay?.release()
         virtualDisplay = null
-        spsPpsData = null
 
-        closeCurrentSegmentFile()
+        if (wasEncoding && tsSegmentIndex > 0) {
+            updateHlsPlaylist(finished = true)
+            Log.i(TAG, "Final HLS playlist with ENDLIST written due to stopCastingInternals.")
+        } else if (hlsPlaylistFile?.exists() == true && tsSegmentIndex == 0L) {
+            hlsPlaylistFile?.delete()
+            Log.i(TAG, "Deleted empty initial HLS playlist during stop.")
+        }
 
         hlsServer?.stop()
         hlsServer = null
@@ -592,14 +503,14 @@ class ScreenCastingService : Service() {
 
         stopServiceDiscovery()
 
-        Log.i(TAG, "Casting internals stopped and resources released.") // Changed to info
+        Log.i(TAG, "Casting internals stopped and resources released.")
         stopForeground(true)
         stopSelf()
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "ScreenCastingService onDestroy.") // Changed to info
-        stopCastingInternals() // Ensures all above is called
+        Log.i(TAG, "ScreenCastingService onDestroy.")
+        stopCastingInternals()
         libVLC?.release()
         libVLC = null
         hlsFilesDir?.let { dir ->
@@ -613,10 +524,11 @@ class ScreenCastingService : Service() {
         }
         hlsFilesDir = null
         super.onDestroy()
-        Log.i(TAG, "ScreenCastingService fully destroyed.") // Changed to info
+        Log.i(TAG, "ScreenCastingService fully destroyed.")
     }
 
     private fun createNotificationChannel() {
+        // ... (content of createNotificationChannel - unchanged)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW)
             channel.description = getString(R.string.notification_channel_description)
@@ -625,6 +537,7 @@ class ScreenCastingService : Service() {
     }
 
     private fun createNotification(contentText: String): Notification {
+        // ... (content of createNotification - unchanged)
         val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -646,6 +559,7 @@ class ScreenCastingService : Service() {
     }
 
     private fun updateNotification(contentText: String) {
+        // ... (content of updateNotification - unchanged)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, createNotification(contentText))
     }
@@ -666,8 +580,11 @@ class ScreenCastingService : Service() {
         private const val VIDEO_HEIGHT = 720
         private const val VIDEO_BITRATE = 2 * 1024 * 1024
         private const val VIDEO_FRAME_RATE = 30
-        private const val IFRAME_INTERVAL_SECONDS = 2 // Increased for potentially better segmenting
-        private const val CODEC_TIMEOUT_US = 10000L
+        // IFRAME_INTERVAL_SECONDS is less critical for MediaRecorder as it handles keyframes internally for TS.
+        // But can be kept if any other logic might use it, or removed if purely for MediaCodec.
+        // For MediaRecorder, setMaxDuration and setMaxFileSize are the primary controls for segmentation.
+        // private const val IFRAME_INTERVAL_SECONDS = 2
+        private const val CODEC_TIMEOUT_US = 10000L // Kept if any MediaCodec remnants, but likely unused now.
 
         private const val MAX_SEGMENTS_IN_PLAYLIST = 5
         private const val SEGMENT_DURATION_SECONDS = 2L
