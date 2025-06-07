@@ -45,6 +45,7 @@ android {
 
     buildFeatures {
         viewBinding = true // Enable ViewBinding for easier UI interaction
+        prefab = true      // Add or set this to true
     }
 
     externalNativeBuild {
