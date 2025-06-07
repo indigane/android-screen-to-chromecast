@@ -242,6 +242,18 @@ class ScreenCastingService : Service() {
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
         try {
+            // Attempt to configure audio
+            try {
+                mediaRecorder?.setAudioSource(MediaRecorder.AudioSource.MIC)
+                mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                mediaRecorder?.setAudioSamplingRate(44100) // Standard sampling rate
+                mediaRecorder?.setAudioEncodingBitRate(96000) // Reasonable AAC bitrate
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to set up audio source/encoder, proceeding without audio. Error: ${e.message}", e)
+                // Depending on strictness, could throw or simply allow video-only if recorder supports it.
+                // For now, we log and continue, setOnErrorListener will catch prepare() if this is fatal.
+            }
+
             mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_2_TS)
             mediaRecorder?.setOutputFile(currentSegmentFile.absolutePath)
@@ -334,6 +346,13 @@ class ScreenCastingService : Service() {
                 }
             }
             Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
+            // Add Playlist Content Read-Back Log
+            try {
+                val playlistContent = hlsPlaylistFile?.readText() ?: "Playlist file not found or empty after write attempt."
+                Log.i(TAG, "Playlist content read back immediately after write (tsSegmentIndex: $tsSegmentIndex, finished: $finished):\n$playlistContent")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reading back playlist content: ${e.message}", e)
+            }
         } catch (e: IOException) {
             Log.e(TAG, "Error writing HLS playlist", e)
         }

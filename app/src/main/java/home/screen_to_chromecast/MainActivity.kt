@@ -2,11 +2,14 @@ package home.screen_to_chromecast
 
 import android.app.Activity
 import android.content.Intent
+import android.Manifest // Added import
+import android.content.pm.PackageManager // Added import
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.util.Log
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat // Added import
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import home.screen_to_chromecast.casting.ScreenCastingService
@@ -27,10 +30,11 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     private lateinit var rendererAdapter: ArrayAdapter<String>
     private var selectedRenderer: RendererItem? = null
 
-    private val requestMediaProjection =
+    // Launcher for MediaProjection permission (remains largely the same)
+    private val requestMediaProjectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                Log.d(TAG, "MediaProjection permission granted.")
+                Log.d(TAG, "MediaProjection permission granted by user.")
                 val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
                     action = ScreenCastingService.ACTION_START_CASTING
                     putExtra(ScreenCastingService.EXTRA_RESULT_CODE, result.resultCode)
@@ -39,10 +43,30 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 startForegroundService(serviceIntent)
             } else {
                 Log.w(TAG, "MediaProjection permission denied.")
-                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission denied."
+                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission was denied." // Slightly clearer
                 RendererHolder.selectedRendererName = null
                 RendererHolder.selectedRendererType = null
                 selectedRenderer = null
+            }
+        }
+
+    // New launcher for RECORD_AUDIO permission
+    private val requestAudioPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
+            if (isGranted) {
+                Log.d(TAG, "RECORD_AUDIO permission granted by user.")
+                // Now that audio permission is granted, request MediaProjection
+                binding.textViewStatus.text = getString(R.string.status_requesting_media_projection) // Add this string
+                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            } else {
+                Log.w(TAG, "RECORD_AUDIO permission denied by user.")
+                binding.textViewStatus.text = getString(R.string.error_audio_permission_denied)
+                // Clear selection or handle UI state as appropriate
+                selectedRenderer = null
+                RendererHolder.selectedRendererName = null
+                RendererHolder.selectedRendererType = null
+                // Consider also resetting the status text or device list selection UI
             }
         }
 
@@ -91,10 +115,31 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 val clickedRendererName = clickedRenderer.name ?: "Unknown Name"
                 val clickedRendererDisplayName = clickedRenderer.displayName ?: clickedRendererName
                 Log.d(TAG, "Selected renderer: $clickedRendererName (Type: ${clickedRenderer.type}, DisplayName: $clickedRendererDisplayName)")
-                binding.textViewStatus.text = getString(R.string.casting_to, clickedRendererDisplayName)
+                // Tentatively set status, will be updated based on permission flow
+                binding.textViewStatus.text = getString(R.string.status_requesting_permissions)
 
-                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                requestMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+                // Request RECORD_AUDIO permission first
+                when {
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED -> {
+                        Log.d(TAG, "RECORD_AUDIO permission already granted. Proceeding to MediaProjection.")
+                        binding.textViewStatus.text = getString(R.string.status_requesting_media_projection) // Update status
+                        val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                        requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    }
+                    shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> {
+                        // Optional: Show a rationale to the user before requesting again.
+                        // For this subtask, we'll proceed directly to request.
+                        Log.i(TAG, "Showing rationale for RECORD_AUDIO permission (or would, if implemented). Requesting again.")
+                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                    else -> {
+                        Log.d(TAG, "RECORD_AUDIO permission not yet granted. Launching request.")
+                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
             }
         }
     }

@@ -43,4 +43,9 @@
     <!-- MediaRecorder Error Strings -->
     <string name="error_mediarecorder">MediaRecorder error: Type %1$d, Code %2$d. Please try again.</string>
     <string name="error_mediarecorder_prepare_start">Error preparing MediaRecorder for segment %1$d. Please try again.</string>
+
+    <!-- Permission Strings -->
+    <string name="error_audio_permission_denied">Audio recording permission denied. Cannot cast with audio.</string>
+    <string name="status_requesting_permissions">Requesting permissions…</string>
+    <string name="status_requesting_media_projection">Requesting screen capture permission...</string>
 </resources>
