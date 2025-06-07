@@ -333,24 +333,24 @@ class ScreenCastingService : Service() {
 
                         if (createNewSegment) {
                             if (currentSegmentFileOutputStream != null) {
-                                closeCurrentSegmentFile() // Finalize the previous segment
-                                if(tsSegmentIndex > 0) { // Only update playlist if a segment was actually written
-                                   updateHlsPlaylist() // Update playlist for the segment just closed
-                                }
+                                closeCurrentSegmentFile() // Finalize the previous segment (segment N)
+                                // tsSegmentIndex still refers to segment N here
+                                Log.i(TAG, "Updating playlist for closed segment. Current index: $tsSegmentIndex. Previous segment closed.")
+                                updateHlsPlaylist() // Update playlist to include segment N
                             }
 
-                            // Prepare the new segment
+                            // Prepare for the new segment (segment N+1)
                             tsSegmentIndex++
                             tsSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
                             currentSegmentFileOutputStream = FileOutputStream(tsSegmentFile!!)
                             currentSegmentStartTimeUs = ptsUs
-                            Log.i(TAG, "New segment started: ${tsSegmentFile?.name} at PTS $ptsUs. Keyframe: $isKeyFrame. Index: $tsSegmentIndex")
+                            Log.i(TAG, "Starting new segment: index=$tsSegmentIndex, file=${tsSegmentFile?.name}, startTimeUs=$currentSegmentStartTimeUs, isKeyFrame=$isKeyFrame")
 
                             spsPpsData?.let {
                                 currentSegmentFileOutputStream?.write(it)
                                 Log.d(TAG, "Wrote SPS/PPS to new segment ${tsSegmentFile?.name}")
                             }
-                            // DO NOT call updateHlsPlaylist() here for the newly opened segment.
+                            // Playlist is NOT updated here for the newly opened segment
                         }
 
                         if (currentSegmentFileOutputStream != null) {
@@ -402,36 +402,29 @@ class ScreenCastingService : Service() {
             Log.e(TAG, "Playlist file or HLS directory is null. Cannot update playlist.")
             return
         }
+        Log.i(TAG, "updateHlsPlaylist called. tsSegmentIndex: $tsSegmentIndex, finished: $finished")
         try {
-            val writer = hlsPlaylistFile!!.bufferedWriter()
-            writer.write("#EXTM3U\n")
-            writer.write("#EXT-X-VERSION:3\n")
-            // Target duration should be the max segment duration, rounded up or actual if precisely known.
-            // Using SEGMENT_DURATION_SECONDS directly as it's a target, add 1 for safety margin as per spec.
-            writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
+            hlsPlaylistFile!!.bufferedWriter().use { writer ->
+                writer.write("#EXTM3U\n")
+                writer.write("#EXT-X-VERSION:3\n")
+                writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
 
-            // Media sequence is the number of the first segment in the playlist.
-            // If tsSegmentIndex is 0 (no segments yet), firstSegmentInPlaylist could be < 1, handle this.
-            // Let's assume tsSegmentIndex is 1-based for actual segments written.
-            // If tsSegmentIndex is 0, media sequence should ideally be 0.
-            val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <=0) 1 else MAX_SEGMENTS_IN_PLAYLIST // Ensure positive
-            val firstSegmentInPlaylist = if (tsSegmentIndex == 0L) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
-            writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
+                val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
+                val firstSegmentInPlaylist = if (tsSegmentIndex == 0L) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
+                writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
-            // Loop for segments: from firstSegmentInPlaylist up to current tsSegmentIndex
-            // Only add segments if tsSegmentIndex is > 0
-            if (tsSegmentIndex > 0L) {
-                for (i in firstSegmentInPlaylist .. tsSegmentIndex) {
-                   writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
-                   writer.write("segment$i.ts\n")
+                if (tsSegmentIndex > 0L) {
+                    for (i in firstSegmentInPlaylist..tsSegmentIndex) {
+                        writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
+                        writer.write("segment$i.ts\n")
+                    }
                 }
-            }
 
-            if (finished) {
-                writer.write("#EXT-X-ENDLIST\n")
-            }
-            writer.close()
-            Log.d(TAG, "HLS playlist updated. Finished: $finished. Current segment index: $tsSegmentIndex. First segment in playlist: $firstSegmentInPlaylist")
+                if (finished) {
+                    writer.write("#EXT-X-ENDLIST\n")
+                }
+            } // Writer is automatically closed here
+            Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished. First segment in playlist: $firstSegmentInPlaylist")
         } catch (e: IOException) {
             Log.e(TAG, "Error writing HLS playlist", e)
         }
