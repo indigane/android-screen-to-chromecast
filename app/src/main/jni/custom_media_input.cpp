@@ -189,45 +189,85 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     return JNI_VERSION_1_6;
 }
 
-extern "C" JNIEXPORT jlong JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_home_screen_1to_1chromecast_casting_ScreenCastingService_nativeInitMediaCallbacks(
         JNIEnv *env,
         jobject thiz,
         jobject nal_queue,
         jbyteArray sps_pps_data_arr,
-        jlong libvlc_instance_ptr) {
+        jlong mediaPlayerPtr) {
 
-    __android_log_print(ANDROID_LOG_INFO, TAG, "nativeInitMediaCallbacks called");
+    __android_log_print(ANDROID_LOG_INFO, TAG, "nativeInitMediaCallbacks called with mediaPlayerPtr: %p", (void*)mediaPlayerPtr);
 
     if (!g_jvm) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: g_jvm is null!");
-        return 0;
+        return JNI_FALSE;
     }
     if (!nal_queue) {
          __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: nal_queue is null!");
-        return 0;
+        return JNI_FALSE;
+    }
+    if (mediaPlayerPtr == 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: mediaPlayerPtr is 0!");
+        return JNI_FALSE;
     }
 
     auto *data = new(std::nothrow) media_input_opaque_t();
     if (!data) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: Failed to allocate opaque data struct");
-        return 0;
+        return JNI_FALSE;
     }
 
     data->jvm = g_jvm;
-    data->nal_queue_obj = env->NewGlobalRef(nal_queue);
+    data->nal_queue_obj = nullptr; // Initialize before potential failure paths
     data->sps_pps_jbyteArray = nullptr;
+    data->time_unit_milliseconds_obj = nullptr;
+
+    data->nal_queue_obj = env->NewGlobalRef(nal_queue);
+    if (!data->nal_queue_obj) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: Failed to create global ref for nal_queue");
+        delete data;
+        return JNI_FALSE;
+    }
+
     if (sps_pps_data_arr) {
         data->sps_pps_jbyteArray = static_cast<jbyteArray>(env->NewGlobalRef(sps_pps_data_arr));
-         __android_log_print(ANDROID_LOG_INFO, TAG, "nativeInitMediaCallbacks: Created global ref for sps_pps_data_arr");
+        if (!data->sps_pps_jbyteArray) {
+            __android_log_print(ANDROID_LOG_WARN, TAG, "nativeInitMediaCallbacks: Failed to create global ref for sps_pps_data_arr, proceeding without it.");
+            // Not a fatal error, SPS/PPS might come later or not at all
+        } else {
+            __android_log_print(ANDROID_LOG_INFO, TAG, "nativeInitMediaCallbacks: Created global ref for sps_pps_data_arr");
+        }
     } else {
         __android_log_print(ANDROID_LOG_INFO, TAG, "nativeInitMediaCallbacks: sps_pps_data_arr is null");
     }
+
     data->sps_pps_fully_sent = false;
     data->sps_pps_sent_offset = 0;
     data->stream_opened = false;
-    data->vlc_instance = reinterpret_cast<libvlc_instance_t*>(libvlc_instance_ptr);
-    data->time_unit_milliseconds_obj = nullptr;
+    // data->vlc_instance will be set below
+
+    // Get LibVLC instance from media player
+    auto *mp = reinterpret_cast<libvlc_media_player_t*>(mediaPlayerPtr);
+    if (!mp) { // This check is technically redundant due to mediaPlayerPtr == 0 check, but good for clarity
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: mediaPlayerPtr is null after cast!");
+        if (data->nal_queue_obj) env->DeleteGlobalRef(data->nal_queue_obj);
+        if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
+        // time_unit_milliseconds_obj not yet created
+        delete data;
+        return JNI_FALSE;
+    }
+    libvlc_instance_t* vlc_instance = libvlc_media_player_get_instance(mp);
+    if (!vlc_instance) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "nativeInitMediaCallbacks: Failed to get VLC instance from media player");
+        if (data->nal_queue_obj) env->DeleteGlobalRef(data->nal_queue_obj);
+        if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
+        // time_unit_milliseconds_obj not yet created
+        delete data;
+        return JNI_FALSE;
+    }
+    data->vlc_instance = vlc_instance;
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Successfully got VLC instance: %p from media player: %p", vlc_instance, mp);
 
     // Get TimeUnit.MILLISECONDS enum value and store as global ref in opaque struct
     jclass timeUnitClass = env->FindClass("java/util/concurrent/TimeUnit");
@@ -246,31 +286,35 @@ Java_home_screen_1to_1chromecast_casting_ScreenCastingService_nativeInitMediaCal
                 data->time_unit_milliseconds_obj = env->NewGlobalRef(localTimeUnitMs);
                 env->DeleteLocalRef(localTimeUnitMs);
                 if(data->time_unit_milliseconds_obj) {
-                     __android_log_print(ANDROID_LOG_INFO, TAG, "JNI_OnLoad: TimeUnit.MILLISECONDS GlobalRef created for instance.");
+                     __android_log_print(ANDROID_LOG_INFO, TAG, "Successfully created global ref for TimeUnit.MILLISECONDS.");
                 } else {
-                    __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to create global ref for TimeUnit.MILLISECONDS for instance.");
+                    __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to create global ref for TimeUnit.MILLISECONDS.");
                 }
             }
         }
         env->DeleteLocalRef(timeUnitClass);
     }
-     if (!data->time_unit_milliseconds_obj) { // Critical for poll
+
+    if (!data->time_unit_milliseconds_obj) { // Critical for poll
         __android_log_print(ANDROID_LOG_ERROR, TAG, "TimeUnit.MILLISECONDS enum global ref is null! Aborting init.");
         if (data->nal_queue_obj) env->DeleteGlobalRef(data->nal_queue_obj);
         if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
+        // data->time_unit_milliseconds_obj is already null
         delete data;
-        return 0;
+        return JNI_FALSE;
     }
-
 
     jclass queue_clazz = env->GetObjectClass(data->nal_queue_obj);
     if (!queue_clazz) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to get ArrayBlockingQueue class");
-        // goto error_cleanup; // Simplified cleanup
-    } else {
-        data->nal_queue_poll_method_id = env->GetMethodID(queue_clazz, "poll", "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;");
-        env->DeleteLocalRef(queue_clazz); // Clean up local ref to class
+        if (data->nal_queue_obj) env->DeleteGlobalRef(data->nal_queue_obj);
+        if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
+        if (data->time_unit_milliseconds_obj) env->DeleteGlobalRef(data->time_unit_milliseconds_obj);
+        delete data;
+        return JNI_FALSE;
     }
+    data->nal_queue_poll_method_id = env->GetMethodID(queue_clazz, "poll", "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;");
+    env->DeleteLocalRef(queue_clazz); // Clean up local ref to class
 
     if (!data->nal_queue_poll_method_id) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "Critical JNI method ID for poll not found. Aborting.");
@@ -278,11 +322,11 @@ Java_home_screen_1to_1chromecast_casting_ScreenCastingService_nativeInitMediaCal
         if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
         if (data->time_unit_milliseconds_obj) env->DeleteGlobalRef(data->time_unit_milliseconds_obj);
         delete data;
-        return 0;
+        return JNI_FALSE;
     }
 
     libvlc_media_t *media = libvlc_media_new_callbacks(
-            data->vlc_instance,
+            data->vlc_instance, // Use the instance obtained from the media player
             open_cb,
             read_cb,
             seek_cb,
@@ -292,28 +336,29 @@ Java_home_screen_1to_1chromecast_casting_ScreenCastingService_nativeInitMediaCal
 
     if (!media) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "libvlc_media_new_callbacks failed");
-        // Full cleanup for data, as close_cb won't be called by VLC
+        // Full cleanup for data, as close_cb won't be called by VLC if media creation fails
         if (data->nal_queue_obj) env->DeleteGlobalRef(data->nal_queue_obj);
         if (data->sps_pps_jbyteArray) env->DeleteGlobalRef(data->sps_pps_jbyteArray);
         if (data->time_unit_milliseconds_obj) env->DeleteGlobalRef(data->time_unit_milliseconds_obj);
-        delete data;
-        return 0;
+        delete data; // This data struct is now orphaned.
+        return JNI_FALSE;
     }
     __android_log_print(ANDROID_LOG_INFO, TAG, "libvlc_media_new_callbacks successful, media ptr: %p", media);
 
-    return reinterpret_cast<jlong>(media);
+    // Add media options
+    libvlc_media_add_option(media, ":demux=h264");
+    libvlc_media_add_option(media, ":h264-fps=30"); // Assuming fixed 30 FPS, adjust if dynamic
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Added media options :demux=h264 and :h264-fps=30");
+
+    // Set the media to the media player
+    libvlc_media_player_set_media(mp, media);
+
+    // After setting the media to the player, the player takes its own reference.
+    // We must release our initial reference to the media object.
+    libvlc_media_release(media);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Set media to player and released local media reference.");
+
+    return JNI_TRUE; // Success
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_home_screen_1to_1chromecast_casting_ScreenCastingService_nativeReleaseMediaCallbacks(
-        JNIEnv *env,
-        jobject thiz,
-        jlong media_ptr) {
-    __android_log_print(ANDROID_LOG_INFO, TAG, "nativeReleaseMediaCallbacks called for media ptr: %p", (void*)media_ptr);
-    if (media_ptr == 0) {
-        return;
-    }
-    auto *media = reinterpret_cast<libvlc_media_t *>(media_ptr);
-    libvlc_media_release(media);
-    __android_log_print(ANDROID_LOG_INFO, TAG, "nativeReleaseMediaCallbacks: libvlc_media_release called.");
-}
+// nativeAddMediaOption and nativeReleaseMediaCallbacks are removed as per instructions.
