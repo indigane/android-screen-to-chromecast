@@ -221,18 +221,10 @@ class ScreenCastingService : Service() {
 
     private fun setupMediaCodecAndVirtualDisplay(): Boolean {
         Log.d(TAG, "Setting up MediaCodec and VirtualDisplay...")
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val metrics = DisplayMetrics()
 
-        // Get display metrics
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val display = this.display // Requires API 30 for service context, ensure proper handling or default
-            display?.getRealMetrics(metrics) ?: windowManager.defaultDisplay.getRealMetrics(metrics)
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.getMetrics(metrics)
-        }
-        val screenDensity = metrics.densityDpi
+        // Get screen density directly from resources
+        val screenDensity = resources.displayMetrics.densityDpi
+        Log.d(TAG, "Screen density obtained: $screenDensity")
 
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, VIDEO_WIDTH, VIDEO_HEIGHT)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
