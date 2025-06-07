@@ -103,7 +103,7 @@ class ScreenCastingService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     @Volatile private var isEncoding = false // Flag to control overall encoding process
     private var hlsPlaylistFile: File? = null
-    private var tsSegmentIndex = 0L
+    private var tsSegmentIndex = 0 // Changed to Int
     private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
 
 
@@ -198,7 +198,7 @@ class ScreenCastingService : Service() {
                 }
 
                 isEncoding = true
-                tsSegmentIndex = 0L
+                tsSegmentIndex = 0 // Changed to Int
                 hlsPlaylistFile?.delete()
                 updateHlsPlaylist(finished = false) // Create initial empty playlist
 
@@ -317,16 +317,13 @@ class ScreenCastingService : Service() {
                 writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
 
                 val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
-                // Ensure firstSegmentInPlaylist is at least 1 if tsSegmentIndex > 0, or 0 if tsSegmentIndex is 0
-                val firstSegmentInPlaylist = if (tsSegmentIndex == 0L && !finished) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
+                val firstSegmentInPlaylist = if (tsSegmentIndex == 0 && !finished) 0 else max(1, tsSegmentIndex - actualMaxSegments + 1)
 
                 writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
-                if (tsSegmentIndex > 0L) { // Only list segments if at least one has been completed or is being written
-                    // For non-finished playlist, list up to current tsSegmentIndex
-                    // For finished playlist, list up to current tsSegmentIndex (which is the last completed one)
-                    val endSegment = tsSegmentIndex
-                    for (i in firstSegmentInPlaylist..endSegment) {
+                if (tsSegmentIndex > 0) {
+                    // Corrected loop to use Int consistently with tsSegmentIndex
+                    for (i in firstSegmentInPlaylist..tsSegmentIndex) {
                         writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
                         writer.write("segment$i.ts\n")
                     }
@@ -466,7 +463,7 @@ class ScreenCastingService : Service() {
         if (wasEncoding && tsSegmentIndex > 0) {
             updateHlsPlaylist(finished = true)
             Log.i(TAG, "Final HLS playlist with ENDLIST written due to stopCastingInternals.")
-        } else if (hlsPlaylistFile?.exists() == true && tsSegmentIndex == 0L) {
+        } else if (hlsPlaylistFile?.exists() == true && tsSegmentIndex == 0) {
             hlsPlaylistFile?.delete()
             Log.i(TAG, "Deleted empty initial HLS playlist during stop.")
         }
@@ -587,6 +584,6 @@ class ScreenCastingService : Service() {
         private const val CODEC_TIMEOUT_US = 10000L // Kept if any MediaCodec remnants, but likely unused now.
 
         private const val MAX_SEGMENTS_IN_PLAYLIST = 5
-        private const val SEGMENT_DURATION_SECONDS = 2L
+        private const val SEGMENT_DURATION_SECONDS = 2 // Changed to Int
     }
 }

@@ -39,4 +39,8 @@
     <string name="notification_channel_name">Screen Casting</string>
     <string name="notification_channel_description">Notification for active screen casting session</string>
     <string name="casting_notification_title">Casting Screen</string>
+
+    <!-- MediaRecorder Error Strings -->
+    <string name="error_mediarecorder">MediaRecorder error: Type %1$d, Code %2$d. Please try again.</string>
+    <string name="error_mediarecorder_prepare_start">Error preparing MediaRecorder for segment %1$d. Please try again.</string>
 </resources>
