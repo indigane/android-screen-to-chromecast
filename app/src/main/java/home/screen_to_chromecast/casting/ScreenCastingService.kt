@@ -112,8 +112,9 @@ class ScreenCastingService : Service() {
     private var hlsPlaylistFile: File? = null
     private var tsSegmentFile: File? = null // Current segment file being written
     private var currentSegmentFileOutputStream: FileOutputStream? = null
-    private var tsSegmentIndex = 0L // Use Long for safety, though Int is likely fine
-    private var currentSegmentStartPtsUs = 0L // Presentation timestamp of the start of the current segment
+    private var tsSegmentIndex = 0L
+    private var currentSegmentStartTimeUs: Long = -1L // Presentation timestamp of the first frame in the current segment
+    private var lastKnownPtsUs: Long = 0L // To track presentation timestamps
 
     override fun onCreate() {
         super.onCreate()
@@ -205,6 +206,15 @@ class ScreenCastingService : Service() {
                     }
                 }
 
+                // Initialize/Reset HLS variables before starting encoding
+                tsSegmentIndex = 0L
+                currentSegmentStartTimeUs = -1L
+                lastKnownPtsUs = 0L
+                spsPpsData = null // Clear previous SPS/PPS
+                closeCurrentSegmentFile() // Ensure any previous segment file is closed
+                hlsPlaylistFile?.delete() // Delete old playlist to start fresh
+
+
                 if (!startEncoding()) {
                     stopCastingInternals()
                     return START_NOT_STICKY
@@ -275,66 +285,97 @@ class ScreenCastingService : Service() {
     private fun encodeLoop() {
         Log.d(TAG, "Encode loop started.")
         val bufferInfo = MediaCodec.BufferInfo()
-        // currentSegmentStartPtsUs is initialized to 0L
 
         while (isEncoding) {
             try {
                 val outputBufferIndex = mediaCodec?.dequeueOutputBuffer(bufferInfo, CODEC_TIMEOUT_US) ?: -1
 
                 if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val outputFormat = mediaCodec?.outputFormat
-                    outputFormat?.getByteBuffer("csd-0")?.let { csd0 ->
-                        outputFormat.getByteBuffer("csd-1")?.let { csd1 ->
-                            spsPpsData = ByteArray(csd0.remaining() + csd1.remaining())
-                            csd0.get(spsPpsData!!, 0, csd0.remaining())
-                            csd1.get(spsPpsData!!, csd0.remaining(), csd1.remaining())
-                            Log.i(TAG, "SPS/PPS data captured: ${spsPpsData?.size} bytes.")
+                    mediaCodec?.outputFormat?.also { format ->
+                        format.getByteBuffer("csd-0")?.let { csd0 ->
+                            format.getByteBuffer("csd-1")?.let { csd1 ->
+                                spsPpsData = ByteArray(csd0.remaining() + csd1.remaining()).apply {
+                                    csd0.get(this, 0, csd0.remaining())
+                                    csd1.get(this, csd0.remaining(), csd1.remaining())
+                                }
+                                Log.i(TAG, "SPS/PPS data captured: ${spsPpsData?.size} bytes.")
+                            }
                         }
                     }
                 } else if (outputBufferIndex >= 0) {
                     val encodedData = mediaCodec?.getOutputBuffer(outputBufferIndex)
                     if (encodedData != null) {
+                        var ptsUs = bufferInfo.presentationTimeUs
+                        if (ptsUs <= lastKnownPtsUs) { // Ensure monotonically increasing PTS
+                            ptsUs = lastKnownPtsUs + 1
+                            // Log.w(TAG, "Adjusted PTS from ${bufferInfo.presentationTimeUs} to $ptsUs")
+                        }
+                        lastKnownPtsUs = ptsUs
+
                         val isKeyFrame = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                        var createNewSegment = false
 
-                        // Segment cutting logic
-                        val segmentDurationUs = (bufferInfo.presentationTimeUs - currentSegmentStartPtsUs)
-                        if (currentSegmentFileOutputStream == null || (isKeyFrame && segmentDurationUs >= SEGMENT_DURATION_SECONDS * 1000000L)) {
-                            closeCurrentSegmentFile() // Close previous before opening new
+                        if (currentSegmentFileOutputStream == null) { // First segment
+                            if (isKeyFrame) {
+                                createNewSegment = true
+                                Log.i(TAG, "First segment: Starting with key frame.")
+                            } else {
+                                Log.w(TAG, "First frame is not a key frame. Skipping until a key frame is found.")
+                                mediaCodec?.releaseOutputBuffer(outputBufferIndex, false)
+                                continue // Skip this frame
+                            }
+                        } else { // Not the first segment
+                            val segmentDurationUs = ptsUs - currentSegmentStartTimeUs
+                            if (segmentDurationUs >= SEGMENT_DURATION_SECONDS * 1_000_000L && isKeyFrame) {
+                                createNewSegment = true
+                            }
+                        }
+
+                        if (createNewSegment) {
+                            closeCurrentSegmentFile()
                             tsSegmentIndex++
-                            tsSegmentFile = File(hlsFilesDir, "segment${tsSegmentIndex}.ts")
+                            tsSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
                             currentSegmentFileOutputStream = FileOutputStream(tsSegmentFile!!)
-                            currentSegmentStartPtsUs = bufferInfo.presentationTimeUs // Reset for new segment
-                            Log.i(TAG, "New segment created: ${tsSegmentFile?.name} at PTS: $currentSegmentStartPtsUs")
+                            currentSegmentStartTimeUs = ptsUs
+                            Log.i(TAG, "New segment created: ${tsSegmentFile?.name} at PTS $ptsUs. Keyframe: $isKeyFrame")
 
-                            if (spsPpsData != null) { // Always write SPS/PPS at the start of a new segment if available
-                                currentSegmentFileOutputStream?.write(spsPpsData)
+                            spsPpsData?.let { // Write SPS/PPS at the start of each new segment
+                                currentSegmentFileOutputStream?.write(it)
                                 Log.d(TAG, "Wrote SPS/PPS to segment ${tsSegmentFile?.name}")
                             }
                             updateHlsPlaylist()
                         }
 
-                        val chunk = ByteArray(bufferInfo.size)
-                        encodedData.position(bufferInfo.offset)
-                        encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                        encodedData.get(chunk)
-                        currentSegmentFileOutputStream?.write(chunk)
+                        if (currentSegmentFileOutputStream != null) {
+                            val chunk = ByteArray(bufferInfo.size)
+                            encodedData.position(bufferInfo.offset)
+                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                            encodedData.get(chunk)
+                            currentSegmentFileOutputStream?.write(chunk)
+                        } else if (!createNewSegment) {
+                            // This case should ideally not be hit if logic is correct for first segment.
+                            Log.w(TAG, "Skipping frame as segment not initialized (not a keyframe for first segment).")
+                        }
 
                         mediaCodec?.releaseOutputBuffer(outputBufferIndex, false)
                     }
                 } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                     try { Thread.sleep(10) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); break }
+                    try { Thread.sleep(10) } catch (ie: InterruptedException) { Thread.currentThread().interrupt(); break }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Exception in encodeLoop: ${e.message}", e)
-                if (isEncoding) { // To avoid repeated notifications if already stopping
+                if (isEncoding) {
                      updateNotification(getString(R.string.error_encoding_loop))
                 }
-                isEncoding = false // Stop encoding on error
+                isEncoding = false
             }
         }
-        // Encoding stopped
+
+        // Cleanup after loop
         closeCurrentSegmentFile()
-        updateHlsPlaylist(finished = true)
+        if (tsSegmentIndex > 0 || hlsPlaylistFile?.exists() == false ) { // Write playlist if any segments were made or if no playlist exists yet
+            updateHlsPlaylist(finished = true)
+        }
         Log.i(TAG, "Encode loop finished. Final playlist written.")
     }
 
@@ -358,21 +399,32 @@ class ScreenCastingService : Service() {
             val writer = hlsPlaylistFile!!.bufferedWriter()
             writer.write("#EXTM3U\n")
             writer.write("#EXT-X-VERSION:3\n")
+            // Target duration should be the max segment duration, rounded up or actual if precisely known.
+            // Using SEGMENT_DURATION_SECONDS directly as it's a target, add 1 for safety margin as per spec.
             writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
 
-            val firstSegmentInPlaylist = max(1L, tsSegmentIndex - MAX_SEGMENTS_IN_PLAYLIST + 1)
+            // Media sequence is the number of the first segment in the playlist.
+            // If tsSegmentIndex is 0 (no segments yet), firstSegmentInPlaylist could be < 1, handle this.
+            // Let's assume tsSegmentIndex is 1-based for actual segments written.
+            // If tsSegmentIndex is 0, media sequence should ideally be 0.
+            val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <=0) 1 else MAX_SEGMENTS_IN_PLAYLIST // Ensure positive
+            val firstSegmentInPlaylist = if (tsSegmentIndex == 0L) 0L else max(1L, tsSegmentIndex - actualMaxSegments + 1)
             writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
-            for (i in firstSegmentInPlaylist .. tsSegmentIndex) {
-               writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n") // Use actual segment duration if available
-               writer.write("segment$i.ts\n")
+            // Loop for segments: from firstSegmentInPlaylist up to current tsSegmentIndex
+            // Only add segments if tsSegmentIndex is > 0
+            if (tsSegmentIndex > 0L) {
+                for (i in firstSegmentInPlaylist .. tsSegmentIndex) {
+                   writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
+                   writer.write("segment$i.ts\n")
+                }
             }
 
             if (finished) {
                 writer.write("#EXT-X-ENDLIST\n")
             }
             writer.close()
-            Log.d(TAG, "HLS playlist updated. Finished: $finished. Current segment index: $tsSegmentIndex")
+            Log.d(TAG, "HLS playlist updated. Finished: $finished. Current segment index: $tsSegmentIndex. First segment in playlist: $firstSegmentInPlaylist")
         } catch (e: IOException) {
             Log.e(TAG, "Error writing HLS playlist", e)
         }
@@ -438,10 +490,9 @@ class ScreenCastingService : Service() {
                         }
 
                         val media = Media(libVLC, Uri.parse(hlsUrl))
-                        media.addOption(":network-caching=2000") // Increased caching
-                        media.addOption(":hls-live-insertxframetag=yes")
-                        media.addOption(":hls-timeout=15") // Increased timeout
-                        // media.addOption(":demux=hls") // Usually not needed
+                        media.addOption(":network-caching=1000") // Reduced caching slightly
+                        media.addOption(":hls-timeout=10")
+                        media.addOption(":demux=hls") // Explicitly set HLS demuxer
 
                         mediaPlayer?.setMedia(media)
                         media.release()
