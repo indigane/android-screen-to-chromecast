@@ -332,18 +332,25 @@ class ScreenCastingService : Service() {
                         }
 
                         if (createNewSegment) {
-                            closeCurrentSegmentFile()
+                            if (currentSegmentFileOutputStream != null) {
+                                closeCurrentSegmentFile() // Finalize the previous segment
+                                if(tsSegmentIndex > 0) { // Only update playlist if a segment was actually written
+                                   updateHlsPlaylist() // Update playlist for the segment just closed
+                                }
+                            }
+
+                            // Prepare the new segment
                             tsSegmentIndex++
                             tsSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
                             currentSegmentFileOutputStream = FileOutputStream(tsSegmentFile!!)
                             currentSegmentStartTimeUs = ptsUs
-                            Log.i(TAG, "New segment created: ${tsSegmentFile?.name} at PTS $ptsUs. Keyframe: $isKeyFrame")
+                            Log.i(TAG, "New segment started: ${tsSegmentFile?.name} at PTS $ptsUs. Keyframe: $isKeyFrame. Index: $tsSegmentIndex")
 
-                            spsPpsData?.let { // Write SPS/PPS at the start of each new segment
+                            spsPpsData?.let {
                                 currentSegmentFileOutputStream?.write(it)
-                                Log.d(TAG, "Wrote SPS/PPS to segment ${tsSegmentFile?.name}")
+                                Log.d(TAG, "Wrote SPS/PPS to new segment ${tsSegmentFile?.name}")
                             }
-                            updateHlsPlaylist()
+                            // DO NOT call updateHlsPlaylist() here for the newly opened segment.
                         }
 
                         if (currentSegmentFileOutputStream != null) {
