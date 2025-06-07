@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "home.screen_to_chromecast" // Matches the package name in AndroidManifest.xml
     compileSdk = 34 // Target latest stable SDK
+    ndkVersion = "25.2.9519653" // Specify NDK version
 
     defaultConfig {
         applicationId = "home.screen_to_chromecast"
@@ -15,6 +16,9 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -41,6 +45,13 @@ android {
 
     buildFeatures {
         viewBinding = true // Enable ViewBinding for easier UI interaction
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/jni/CMakeLists.txt")
+            version = "3.18.1"
+        }
     }
 }
 
