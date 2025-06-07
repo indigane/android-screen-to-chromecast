@@ -629,4 +629,3 @@ class ScreenCastingService : Service() {
         private const val SEGMENT_DURATION_SECONDS = 2L
     }
 }
-```
