@@ -174,10 +174,11 @@ class ScreenCastingService : Service() {
                 isCasting = true
                 currentRendererItem = null
 
+                // Call startForeground before getMediaProjection as required for Android Q+ background starts
+                startForeground(NOTIFICATION_ID, createNotification(getString(R.string.preparing_stream)))
+
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(mediaProjectionCallback, null)
-
-                startForeground(NOTIFICATION_ID, createNotification(getString(R.string.preparing_stream)))
 
                 if (!setupMediaCodecAndVirtualDisplay()) {
                     stopCastingInternals()
