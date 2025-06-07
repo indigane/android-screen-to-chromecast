@@ -32,10 +32,9 @@ import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
 // IMediaInput and H264StreamInput removed as per instructions
 import java.io.IOException
-// ArrayBlockingQueue, TimeUnit, and thread are no longer needed
-// import java.util.concurrent.ArrayBlockingQueue
-// import java.util.concurrent.TimeUnit
-// import kotlin.concurrent.thread
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
+// import kotlin.concurrent.thread // Not needed as per decision
 
 class ScreenCastingService : Service() {
 
@@ -47,7 +46,17 @@ class ScreenCastingService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var currentRendererItem: RendererItem? = null
 
-    // Removed nalUnitQueue, encodingThread, spsPpsData
+    private var virtualDisplay: VirtualDisplay? = null
+    private var mediaCodec: MediaCodec? = null
+    private var inputSurface: Surface? = null
+    private var encodingThread: Thread? = null
+    private var spsPpsData: ByteArray? = null
+    private lateinit var nalUnitQueue: java.util.concurrent.ArrayBlockingQueue<ByteArray>
+    // Removed: private var customMediaNativePointer: Long = 0L
+    private var customMediaSuccessfullySet: Boolean = false
+    private var isTargetRendererSet: Boolean = false
+    private var customMediaSetupAttempted: Boolean = false
+
     @Volatile
     private var isCasting = false
 
@@ -73,6 +82,7 @@ class ScreenCastingService : Service() {
             return
         }
         mediaPlayer = MediaPlayer(libVLC)
+        nalUnitQueue = java.util.concurrent.ArrayBlockingQueue(NAL_QUEUE_CAPACITY)
         createNotificationChannel()
         Log.d(TAG, "ScreenCastingService created.")
     }
@@ -105,7 +115,10 @@ class ScreenCastingService : Service() {
                 }
 
                 // Clear currentRendererItem from any previous session before starting new discovery
-                currentRendererItem = null
+                currentRendererItem = null // Reset this too
+                isTargetRendererSet = false // Reset flag
+                customMediaSuccessfullySet = false // Reset this flag
+                customMediaSetupAttempted = false // Reset this flag
 
                 val notificationDeviceName = this.targetRendererName ?: "Unknown Device"
                 startForeground(NOTIFICATION_ID, createNotification(getString(R.string.searching_for_device, notificationDeviceName)))
@@ -113,6 +126,13 @@ class ScreenCastingService : Service() {
 
                 mediaProjection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
                 mediaProjection?.registerCallback(mediaProjectionCallback, null)
+
+                startVideoEncoding()
+
+                // Updated JNI Integration
+                // No longer directly calling JNI here, tryNativeSetupAndPlay will handle it.
+                Log.d(TAG, "Video encoding setup complete. NAL queue should be ready.")
+                tryNativeSetupAndPlay()
 
                 startServiceDiscovery() // Start discovery, listener will handle setRenderer
 
@@ -160,6 +180,108 @@ class ScreenCastingService : Service() {
         Log.d(TAG, "Service-side renderer discovery stopped and nullified.")
     }
 
+    private fun startVideoEncoding() {
+        Log.d(TAG, "Starting video encoding...")
+        try {
+            val mediaFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, VIDEO_WIDTH, VIDEO_HEIGHT)
+            mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE)
+            mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE)
+            mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
+
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            mediaCodec?.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = mediaCodec?.createInputSurface()
+
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val displayMetrics = DisplayMetrics()
+            windowManager.defaultDisplay.getMetrics(displayMetrics) // Use defaultDisplay.getMetrics
+
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCasting",
+                VIDEO_WIDTH,
+                VIDEO_HEIGHT,
+                displayMetrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                inputSurface,
+                null,
+                null
+            )
+            mediaCodec?.start()
+            Log.i(TAG, "MediaCodec started and VirtualDisplay created.")
+
+            encodingThread = Thread(Runnable {
+                val bufferInfo = MediaCodec.BufferInfo()
+                while (isCasting) {
+                    try {
+                        val outputBufferIndex = mediaCodec?.dequeueOutputBuffer(bufferInfo, CODEC_TIMEOUT_US) ?: -1
+
+                        if (outputBufferIndex >= 0) {
+                            val outputBuffer = mediaCodec?.getOutputBuffer(outputBufferIndex)
+                            if (outputBuffer != null) {
+                                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                                    Log.d(TAG, "Received BUFFER_FLAG_CODEC_CONFIG")
+                                    val csd = ByteArray(bufferInfo.size)
+                                    outputBuffer.get(csd)
+                                    spsPpsData = csd // Store combined SPS/PPS
+                                    // Offering spsPpsData to queue or using in open_cb will be handled later
+                                    // For now, just storing it. If needed, it could be offered here:
+                                    // if (!nalUnitQueue.offer(spsPpsData, NAL_QUEUE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                    //     Log.w(TAG, "SPS/PPS data offer to queue timed out.")
+                                    // }
+                                } else {
+                                    val nalUnit = ByteArray(bufferInfo.size)
+                                    outputBuffer.get(nalUnit)
+                                    if (!nalUnitQueue.offer(nalUnit, NAL_QUEUE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                        Log.w(TAG, "NAL unit offer to queue timed out. Queue size: ${nalUnitQueue.size}")
+                                    }
+                                }
+                            }
+                            mediaCodec?.releaseOutputBuffer(outputBufferIndex, false)
+                        } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            Log.d(TAG, "Encoder output format changed: ${mediaCodec?.outputFormat}")
+                            // Preferred way to get SPS/PPS
+                            val newFormat = mediaCodec?.outputFormat
+                            val spsBuffer = newFormat?.getByteBuffer("csd-0")
+                            val ppsBuffer = newFormat?.getByteBuffer("csd-1")
+                            if (spsBuffer != null && ppsBuffer != null) {
+                                val sps = ByteArray(spsBuffer.remaining())
+                                spsBuffer.get(sps)
+                                val pps = ByteArray(ppsBuffer.remaining())
+                                ppsBuffer.get(pps)
+                                spsPpsData = ByteArray(sps.size + pps.size)
+                                System.arraycopy(sps, 0, spsPpsData!!, 0, sps.size)
+                                System.arraycopy(pps, 0, spsPpsData!!, sps.size, pps.size)
+                                Log.i(TAG, "SPS/PPS data extracted from format change.")
+                                // Again, offering or using in open_cb is for later.
+                                // if (spsPpsData != null && !nalUnitQueue.offer(spsPpsData, NAL_QUEUE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                //    Log.w(TAG, "SPS/PPS data (from format change) offer to queue timed out.")
+                                // }
+                            }
+                        } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            // Log.v(TAG, "dequeueOutputBuffer timed out, try again later"); // Can be noisy
+                        } else {
+                            Log.w(TAG, "Unhandled outputBufferIndex: $outputBufferIndex")
+                        }
+                    } catch (e: InterruptedException) {
+                        Log.i(TAG, "Encoding thread interrupted.")
+                        break // Exit loop if interrupted
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error during encoding loop: ${e.message}", e)
+                        // Potentially stop casting or signal error
+                    }
+                }
+                Log.d(TAG, "Encoding thread finished.")
+            })
+            encodingThread?.start()
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start video encoding: ${e.message}", e)
+            // Update notification or stop casting if critical error
+            updateNotification("Error: Video encoding setup failed")
+            stopCastingInternals() // Ensure cleanup if setup fails
+        }
+    }
 
     // Listener for the service's own RendererDiscoverer instance
     private inner class ServiceRendererEventListener : org.videolan.libvlc.RendererDiscoverer.EventListener {
@@ -179,13 +301,17 @@ class ScreenCastingService : Service() {
 
                     // targetRendererType is now String?, item.type is assumed to be String? from RendererItem
                     if (item.name == targetRendererName && item.type == targetRendererType) {
-                        Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
-                        currentRendererItem = item
-                        mediaPlayer?.setRenderer(currentRendererItem)
-                        // Potentially start playback here if media is set, or ensure it's playing if already set
-                        // mediaPlayer?.play()
-                        updateNotification(getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device"))
-                        stopServiceDiscovery() // Found our target, no need to discover further
+                        Log.i(TAG, "Target renderer '$targetRendererName' (type: ${item.type}) found by service discoverer!")
+                        currentRendererItem = item // Store the found item
+                        isTargetRendererSet = true   // Indicate that our target renderer is available
+
+                        // Notification update: Device found, inform user we're trying to connect/stream
+                        // Placeholder for getString(R.string.device_found_preparing_stream, targetRendererName ?: "Unknown Device")
+                        updateNotification("Device ${targetRendererName ?: "Unknown Device"} found, preparing stream…")
+
+                        stopServiceDiscovery() // Stop discovery as we found our target
+
+                        tryNativeSetupAndPlay() // Attempt to setup and play
                     }
                 }
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
@@ -228,7 +354,53 @@ class ScreenCastingService : Service() {
         }
 
         Log.d(TAG, "Stopping casting internals...")
-        isCasting = false // Set casting flag to false immediately
+        isCasting = false // Set casting flag to false immediately to signal encoding thread
+
+        // Stop Encoding Thread
+        encodingThread?.interrupt()
+        try {
+            encodingThread?.join(1000) // Wait for a short period
+        } catch (e: InterruptedException) {
+            Log.w(TAG, "Interrupted while joining encoding thread: ${e.message}", e)
+            Thread.currentThread().interrupt() // Preserve interrupt status
+        }
+        encodingThread = null
+
+        // Release MediaCodec and VirtualDisplay
+        try {
+            mediaCodec?.stop()
+            mediaCodec?.release()
+            Log.d(TAG, "MediaCodec stopped and released.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping or releasing MediaCodec: ${e.message}", e)
+        }
+        mediaCodec = null
+
+        inputSurface?.release() // Though owned by MediaCodec, explicit release can be good practice
+        inputSurface = null
+        Log.d(TAG, "InputSurface released.")
+
+        try {
+            virtualDisplay?.release()
+            Log.d(TAG, "VirtualDisplay released.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing VirtualDisplay: ${e.message}", e)
+        }
+        virtualDisplay = null
+
+        // Clear the NAL unit queue and reset SPS/PPS data
+        if (this::nalUnitQueue.isInitialized) { // Check if nalUnitQueue has been initialized
+            nalUnitQueue.clear()
+            Log.d(TAG, "NAL unit queue cleared.")
+        }
+        spsPpsData = null
+
+        // JNI related cleanup for custom media
+        customMediaSuccessfullySet = false // Reset this flag
+        isTargetRendererSet = false    // Reset this flag
+        customMediaSetupAttempted = false // Reset this flag
+        currentRendererItem = null     // Reset the stored renderer item
+
 
         stopServiceDiscovery() // Stop service-side discovery if it's running
 
@@ -299,6 +471,60 @@ class ScreenCastingService : Service() {
         Log.d(TAG, "ScreenCastingService fully destroyed.")
     }
 
+    private fun tryNativeSetupAndPlay() {
+        if (customMediaSetupAttempted) {
+            Log.d(TAG, "tryNativeSetupAndPlay: Setup already attempted.")
+            return
+        }
+
+        // Check if nalUnitQueue is initialized, otherwise it could be a race condition if startVideoEncoding hasn't finished
+        if (!this::nalUnitQueue.isInitialized) {
+            Log.w(TAG, "tryNativeSetupAndPlay: NAL unit queue not initialized yet.")
+            return
+        }
+
+        if (isTargetRendererSet && currentRendererItem != null && libVLC != null && mediaPlayer != null /* && nalUnitQueue is ready implicitly by now */) {
+            Log.i(TAG, "tryNativeSetupAndPlay: Conditions met. Attempting native setup and play for renderer: ${currentRendererItem?.name}")
+            customMediaSetupAttempted = true // Mark that we are attempting the setup
+
+            if (mediaProjection == null) {
+                Log.e(TAG, "tryNativeSetupAndPlay: MediaProjection is null, cannot proceed with native setup.")
+                // Placeholder for getString(R.string.error_media_projection_lost)
+                updateNotification("Error: Screen capture permission lost")
+                stopCastingInternals()
+                return
+            }
+
+            // spsPpsData is a member variable, should be populated by startVideoEncoding by now
+            customMediaSuccessfullySet = nativeSetupCustomMediaAndPlay(
+                mediaPlayer!!,
+                libVLC!!,
+                nalUnitQueue,
+                spsPpsData,
+                currentRendererItem!!
+            )
+
+            if (customMediaSuccessfullySet) {
+                Log.i(TAG, "nativeSetupCustomMediaAndPlay succeeded. Stream should be starting.")
+                // Placeholder for getString(R.string.casting_to_device, currentRendererItem?.name ?: "Unknown Device")
+                updateNotification("Casting to ${currentRendererItem?.name ?: "Unknown Device"}...")
+            } else {
+                Log.e(TAG, "nativeSetupCustomMediaAndPlay failed.")
+                // Placeholder for getString(R.string.error_stream_start_failed)
+                updateNotification("Error: Failed to start video stream")
+                stopCastingInternals()
+            }
+        } else {
+            var reason = ""
+            if (customMediaSetupAttempted) reason += "setup already attempted; " // Should not happen due to early exit
+            if (!isTargetRendererSet) reason += "target renderer not set; "
+            if (currentRendererItem == null) reason += "currentRendererItem is null; "
+            if (libVLC == null) reason += "libVLC is null; "
+            if (mediaPlayer == null) reason += "mediaPlayer is null; "
+            Log.d(TAG, "tryNativeSetupAndPlay: Conditions not yet fully met to attempt native setup. Reason: $reason")
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -342,6 +568,15 @@ class ScreenCastingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Declare Native Methods
+    private external fun nativeSetupCustomMediaAndPlay(
+        mediaPlayer: MediaPlayer,
+        libVLC: ILibVLC,
+        nalQueue: ArrayBlockingQueue<ByteArray>,
+        spsPpsData: ByteArray?,
+        rendererItem: RendererItem
+    ): Boolean
+
     companion object {
         private const val TAG = "ScreenCastingSvc"
         private const val TAG_VLC_EVENT = "ScreenCastingSvc_VLCEvt"
@@ -354,14 +589,24 @@ class ScreenCastingService : Service() {
         private const val NOTIFICATION_ID = 1237
         private const val NOTIFICATION_CHANNEL_ID = "ScreenCastingChannel"
 
+        init {
+            try {
+                System.loadLibrary("custom_media_input")
+                Log.i(TAG, "Successfully loaded native library 'custom_media_input'")
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e(TAG, "Failed to load native library 'custom_media_input'", e)
+                // Consider throwing an error or having a flag that prevents service usage
+            }
+        }
+
         // Removed unused video and encoding constants
-        // private const val VIDEO_WIDTH = 1280
-        // private const val VIDEO_HEIGHT = 720
-        // private const val VIDEO_BITRATE = 2 * 1024 * 1024 // 2 Mbps
-        // private const val VIDEO_FRAME_RATE = 30
-        // private const val I_FRAME_INTERVAL_SECONDS = 1
-        // private const val CODEC_TIMEOUT_US = 10000L
-        // private const val NAL_QUEUE_CAPACITY = 120
-        // private const val NAL_QUEUE_TIMEOUT_MS = 100L
+        private const val VIDEO_WIDTH = 1280
+        private const val VIDEO_HEIGHT = 720
+        private const val VIDEO_BITRATE = 2 * 1024 * 1024 // 2 Mbps
+        private const val VIDEO_FRAME_RATE = 30
+        private const val I_FRAME_INTERVAL_SECONDS = 1
+        private const val CODEC_TIMEOUT_US = 10000L
+        private const val NAL_QUEUE_CAPACITY = 120
+        private const val NAL_QUEUE_TIMEOUT_MS = 100L
     }
 }
