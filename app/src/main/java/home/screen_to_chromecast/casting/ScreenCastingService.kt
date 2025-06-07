@@ -249,37 +249,69 @@ class ScreenCastingService : Service() {
         Log.i(TAG, "Starting new MediaRecorder segment: index=$tsSegmentIndex, file=${currentSegmentFile.absolutePath}")
 
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
+        var audioSourceSetSuccessfully = false
 
         try {
-            // Attempt to configure audio
+            // 1. Set Sources
             try {
                 mediaRecorder?.setAudioSource(MediaRecorder.AudioSource.MIC)
-                mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                mediaRecorder?.setAudioSamplingRate(44100) // Standard sampling rate
-                mediaRecorder?.setAudioEncodingBitRate(96000) // Reasonable AAC bitrate
+                audioSourceSetSuccessfully = true
+                Log.d(TAG, "AudioSource.MIC set.")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to set up audio source/encoder, proceeding without audio. Error: ${e.message}", e)
-                // Depending on strictness, could throw or simply allow video-only if recorder supports it.
-                // For now, we log and continue, setOnErrorListener will catch prepare() if this is fatal.
+                Log.w(TAG, "Failed to set AudioSource.MIC. May attempt video-only. Error: ${e.message}")
             }
-
             mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            Log.d(TAG, "VideoSource.SURFACE set.")
+
+            // 2. Set Output Format
             mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_2_TS)
+            Log.d(TAG, "OutputFormat.MPEG_2_TS set.")
+
+            // 3. Set Output File Path (must be after OutputFormat)
             mediaRecorder?.setOutputFile(currentSegmentFile.absolutePath)
+            Log.d(TAG, "OutputFile set to: ${currentSegmentFile.absolutePath}")
+
+            // 4. Set Encoders
+            if (audioSourceSetSuccessfully) {
+                try {
+                    mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    mediaRecorder?.setAudioSamplingRate(44100)
+                    mediaRecorder?.setAudioEncodingBitRate(96000)
+                    Log.d(TAG, "AudioEncoder.AAC and params set.")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set up audio encoder parameters. Audio may not be recorded. Error: ${e.message}")
+                }
+            }
+            mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            Log.d(TAG, "VideoEncoder.H264 set.")
+
+            // 5. Set Video Parameters
             mediaRecorder?.setVideoEncodingBitRate(VIDEO_BITRATE)
             mediaRecorder?.setVideoFrameRate(VIDEO_FRAME_RATE)
             mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
-            mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            Log.d(TAG, "Video parameters (bitrate, framerate, size) set.")
 
-            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add buffer
+            // 6. Set Max Duration & Listeners (before prepare)
+            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500)
+            Log.d(TAG, "MaxDuration set to: ${SEGMENT_DURATION_SECONDS * 1000 + 500} ms")
+
             mediaRecorder?.setOnInfoListener { _, what, _ ->
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    handleSegmentCompletion()
+                    handleSegmentCompletion() // Simplified call
                 }
             }
-            mediaRecorder?.setOnErrorListener { _, what, extra ->
-                Log.e(TAG, "MediaRecorder error: what=$what, extra=$extra")
+            mediaRecorder?.setOnErrorListener { mr, what, extra -> // Added mr instance
+                Log.e(TAG, "MediaRecorder error (what=$what, extra=$extra) on recorder instance: $mr")
                 updateNotification(getString(R.string.error_mediarecorder, what, extra))
+                // Stop only if it's the current instance or if mediaRecorder is already null (during cleanup)
+                if (mr == mediaRecorder || mediaRecorder == null) {
+                    stopCastingInternals()
+                }
+            }
+            Log.d(TAG, "Listeners set.")
+
+            // 7. Prepare
+            mediaRecorder?.prepare()
                 stopCastingInternals()
             }
 
