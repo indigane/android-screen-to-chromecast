@@ -55,6 +55,7 @@ class ScreenCastingService : Service() {
     // Removed: private var customMediaNativePointer: Long = 0L
     private var customMediaSuccessfullySet: Boolean = false
     private var isTargetRendererSet: Boolean = false
+    private var customMediaSetupAttempted: Boolean = false
 
     @Volatile
     private var isCasting = false
@@ -114,9 +115,10 @@ class ScreenCastingService : Service() {
                 }
 
                 // Clear currentRendererItem from any previous session before starting new discovery
-                currentRendererItem = null
+                currentRendererItem = null // Reset this too
                 isTargetRendererSet = false // Reset flag
-                // customMediaSuccessfullySet is false by default or reset in stopCastingInternals
+                customMediaSuccessfullySet = false // Reset this flag
+                customMediaSetupAttempted = false // Reset this flag
 
                 val notificationDeviceName = this.targetRendererName ?: "Unknown Device"
                 startForeground(NOTIFICATION_ID, createNotification(getString(R.string.searching_for_device, notificationDeviceName)))
@@ -128,34 +130,9 @@ class ScreenCastingService : Service() {
                 startVideoEncoding()
 
                 // Updated JNI Integration
-                val mediaPlayerPtr = mediaPlayer?.getNativePointer()
-                if (mediaPlayerPtr == null || mediaPlayerPtr == 0L) {
-                    Log.e(TAG, "Failed to get MediaPlayer native pointer.")
-                    updateNotification("Error: MediaPlayer not ready for custom stream.")
-                    stopCastingInternals()
-                    return START_NOT_STICKY
-                }
-                Log.d(TAG, "MediaPlayer native pointer: $mediaPlayerPtr")
-
-                // spsPpsData should be available from startVideoEncoding() if needed by JNI
-                customMediaSuccessfullySet = nativeInitMediaCallbacks(nalUnitQueue, spsPpsData, mediaPlayerPtr)
-
-                if (customMediaSuccessfullySet) {
-                    Log.i(TAG, "nativeInitMediaCallbacks successful. Custom media set in JNI.")
-                    if (!isTargetRendererSet) {
-                        // Placeholder for getString(R.string.device_found_preparing_stream, targetRendererName ?: "Unknown Device")
-                        updateNotification("Device ${targetRendererName ?: "Unknown Device"} found, preparing stream…")
-                    }
-                    checkAndPlayIfReady()
-                } else {
-                    Log.e(TAG, "nativeInitMediaCallbacks failed to initialize and set custom media.")
-                    // Placeholder for getString(R.string.error_media_stream_init_failed)
-                    updateNotification("Error: Failed to initialize media stream")
-                    // JNI side handles its own cleanup on failure before returning false.
-                    stopCastingInternals()
-                    return START_NOT_STICKY
-                }
-                // Note: The original Log.i for success is now inside the if block.
+                // No longer directly calling JNI here, tryNativeSetupAndPlay will handle it.
+                Log.d(TAG, "Video encoding setup complete. NAL queue should be ready.")
+                tryNativeSetupAndPlay()
 
                 startServiceDiscovery() // Start discovery, listener will handle setRenderer
 
@@ -324,26 +301,17 @@ class ScreenCastingService : Service() {
 
                     // targetRendererType is now String?, item.type is assumed to be String? from RendererItem
                     if (item.name == targetRendererName && item.type == targetRendererType) {
-                        Log.i(TAG, "Target renderer '$targetRendererName' found by service discoverer!")
-                        currentRendererItem = item // Keep track of the current item
+                        Log.i(TAG, "Target renderer '$targetRendererName' (type: ${item.type}) found by service discoverer!")
+                        currentRendererItem = item // Store the found item
+                        isTargetRendererSet = true   // Indicate that our target renderer is available
 
-                        val rendererSetResult = mediaPlayer?.setRenderer(currentRendererItem) ?: -1 // LibVLC setRenderer returns 0 on success
-                        isTargetRendererSet = (rendererSetResult == 0) // Update our flag
+                        // Notification update: Device found, inform user we're trying to connect/stream
+                        // Placeholder for getString(R.string.device_found_preparing_stream, targetRendererName ?: "Unknown Device")
+                        updateNotification("Device ${targetRendererName ?: "Unknown Device"} found, preparing stream…")
 
-                        if (isTargetRendererSet) {
-                            Log.d(TAG, "Successfully set renderer to $targetRendererName")
-                            if (!customMediaSuccessfullySet) {
-                                // Placeholder for getString(R.string.device_found_preparing_stream, targetRendererName ?: "Unknown Device")
-                                updateNotification("Device ${targetRendererName ?: "Unknown Device"} found, preparing stream…")
-                            }
-                            checkAndPlayIfReady()
-                        } else {
-                            Log.e(TAG, "Failed to set renderer $targetRendererName on MediaPlayer. Result code: $rendererSetResult")
-                            // Placeholder for getString(R.string.error_set_renderer_failed, targetRendererName ?: "Unknown Device")
-                            updateNotification("Failed to set renderer: ${targetRendererName ?: "Unknown Device"}")
-                            stopCastingInternals() // Stop if we can't set the renderer
-                        }
-                        stopServiceDiscovery() // Found our target, stop further discovery
+                        stopServiceDiscovery() // Stop discovery as we found our target
+
+                        tryNativeSetupAndPlay() // Attempt to setup and play
                     }
                 }
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
@@ -428,9 +396,11 @@ class ScreenCastingService : Service() {
         spsPpsData = null
 
         // JNI related cleanup for custom media
-        // customMediaNativePointer is removed. nativeReleaseMediaCallbacks is removed.
         customMediaSuccessfullySet = false // Reset this flag
-        isTargetRendererSet = false // Reset this flag
+        isTargetRendererSet = false    // Reset this flag
+        customMediaSetupAttempted = false // Reset this flag
+        currentRendererItem = null     // Reset the stored renderer item
+
 
         stopServiceDiscovery() // Stop service-side discovery if it's running
 
@@ -501,24 +471,57 @@ class ScreenCastingService : Service() {
         Log.d(TAG, "ScreenCastingService fully destroyed.")
     }
 
-    private fun checkAndPlayIfReady() {
-        if (customMediaSuccessfullySet && isTargetRendererSet) {
-            if (mediaPlayer?.isPlaying == false) { // Play only if not already playing
-                Log.i(TAG, "Both custom media and target renderer are set. Calling mediaPlayer.play().")
-                mediaPlayer?.play()
-                // Placeholder for getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device")
-                updateNotification("Casting to ${targetRendererName ?: "Unknown Device"}...")
-            } else if (mediaPlayer?.isPlaying == true) {
-                Log.d(TAG, "checkAndPlayIfReady: MediaPlayer is already playing.")
+    private fun tryNativeSetupAndPlay() {
+        if (customMediaSetupAttempted) {
+            Log.d(TAG, "tryNativeSetupAndPlay: Setup already attempted.")
+            return
+        }
+
+        // Check if nalUnitQueue is initialized, otherwise it could be a race condition if startVideoEncoding hasn't finished
+        if (!this::nalUnitQueue.isInitialized) {
+            Log.w(TAG, "tryNativeSetupAndPlay: NAL unit queue not initialized yet.")
+            return
+        }
+
+        if (isTargetRendererSet && currentRendererItem != null && libVLC != null && mediaPlayer != null /* && nalUnitQueue is ready implicitly by now */) {
+            Log.i(TAG, "tryNativeSetupAndPlay: Conditions met. Attempting native setup and play for renderer: ${currentRendererItem?.name}")
+            customMediaSetupAttempted = true // Mark that we are attempting the setup
+
+            if (mediaProjection == null) {
+                Log.e(TAG, "tryNativeSetupAndPlay: MediaProjection is null, cannot proceed with native setup.")
+                // Placeholder for getString(R.string.error_media_projection_lost)
+                updateNotification("Error: Screen capture permission lost")
+                stopCastingInternals()
+                return
+            }
+
+            // spsPpsData is a member variable, should be populated by startVideoEncoding by now
+            customMediaSuccessfullySet = nativeSetupCustomMediaAndPlay(
+                mediaPlayer!!,
+                libVLC!!,
+                nalUnitQueue,
+                spsPpsData,
+                currentRendererItem!!
+            )
+
+            if (customMediaSuccessfullySet) {
+                Log.i(TAG, "nativeSetupCustomMediaAndPlay succeeded. Stream should be starting.")
+                // Placeholder for getString(R.string.casting_to_device, currentRendererItem?.name ?: "Unknown Device")
+                updateNotification("Casting to ${currentRendererItem?.name ?: "Unknown Device"}...")
             } else {
-                Log.w(TAG, "checkAndPlayIfReady: MediaPlayer state unknown or null, but conditions met. Attempting play.")
-                mediaPlayer?.play() // Attempt play if state is not definitively 'playing'
-                // Placeholder for getString(R.string.casting_to_device, targetRendererName ?: "Unknown Device")
-                updateNotification("Casting to ${targetRendererName ?: "Unknown Device"}...")
+                Log.e(TAG, "nativeSetupCustomMediaAndPlay failed.")
+                // Placeholder for getString(R.string.error_stream_start_failed)
+                updateNotification("Error: Failed to start video stream")
+                stopCastingInternals()
             }
         } else {
-            // Log.d(TAG, "checkAndPlayIfReady: Not ready to play. MediaSet: $customMediaSuccessfullySet, RendererSet: $isTargetRendererSet")
-            // Notifications are handled by the callers of this function based on which part became ready.
+            var reason = ""
+            if (customMediaSetupAttempted) reason += "setup already attempted; " // Should not happen due to early exit
+            if (!isTargetRendererSet) reason += "target renderer not set; "
+            if (currentRendererItem == null) reason += "currentRendererItem is null; "
+            if (libVLC == null) reason += "libVLC is null; "
+            if (mediaPlayer == null) reason += "mediaPlayer is null; "
+            Log.d(TAG, "tryNativeSetupAndPlay: Conditions not yet fully met to attempt native setup. Reason: $reason")
         }
     }
 
@@ -566,14 +569,13 @@ class ScreenCastingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // Declare Native Methods
-    private external fun nativeInitMediaCallbacks(
+    private external fun nativeSetupCustomMediaAndPlay(
+        mediaPlayer: MediaPlayer,
+        libVLC: ILibVLC,
         nalQueue: ArrayBlockingQueue<ByteArray>,
         spsPpsData: ByteArray?,
-        mediaPlayerPtr: Long // Changed from libVlcInstancePtr
-    ): Boolean // Changed from Long
-
-    // Removed: private external fun nativeReleaseMediaCallbacks(mediaPtr: Long)
-    // Removed: private external fun nativeAddMediaOption(mediaPtr: Long, option: String)
+        rendererItem: RendererItem
+    ): Boolean
 
     companion object {
         private const val TAG = "ScreenCastingSvc"
