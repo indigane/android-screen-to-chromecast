@@ -587,10 +587,10 @@ class ScreenCastingService : Service() {
         private const val NOTIFICATION_ID = 1237
         private const val NOTIFICATION_CHANNEL_ID = "ScreenCastingChannel"
 
-        private const val VIDEO_WIDTH = 1280
-        private const val VIDEO_HEIGHT = 720
-        private const val VIDEO_BITRATE = 2 * 1024 * 1024
-        private const val VIDEO_FRAME_RATE = 30
+        private const val VIDEO_WIDTH = 640
+        private const val VIDEO_HEIGHT = 360
+        private const val VIDEO_BITRATE = 500 * 1024
+        private const val VIDEO_FRAME_RATE = 15
         // IFRAME_INTERVAL_SECONDS is less critical for MediaRecorder as it handles keyframes internally for TS.
         // But can be kept if any other logic might use it, or removed if purely for MediaCodec.
         // For MediaRecorder, setMaxDuration and setMaxFileSize are the primary controls for segmentation.
