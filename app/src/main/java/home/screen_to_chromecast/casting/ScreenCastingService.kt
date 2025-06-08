@@ -208,6 +208,18 @@ class ScreenCastingService : Service() {
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
+
+                // Add delay after first segment start, before playlist update
+                try {
+                    Log.d(TAG, "Delaying for 750ms after first segment start, before playlist update.")
+                    Thread.sleep(750)
+                } catch (e: InterruptedException) {
+                    Log.w(TAG, "Thread sleep interrupted during initial HLS delay", e)
+                    Thread.currentThread().interrupt() // Preserve interrupt status
+                    // Optionally, handle by stopping casting or just proceeding
+                    // If critical, could call stopCastingInternals() and return START_NOT_STICKY here
+                }
+
                 // If startNewMediaRecorderSegment was successful, tsSegmentIndex is now 1
                 updateHlsPlaylist(finished = false) // Now generates playlist with segment1.ts
                 startServiceDiscovery()
