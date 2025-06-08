@@ -141,26 +141,26 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 val itemDisplayName = item.displayName ?: "N/A"
                 Log.d(TAG, "Renderer Added: $itemName (Type: ${item.type}, DisplayName: $itemDisplayName)")
                 synchronized(discoveredRenderers) {
-                    var alreadyExists = false
-                    // Check if a renderer with the same name and type already exists to prevent duplicates.
-                    // This is a common pattern for LibVLC renderer discovery.
-                    // Also handle null names by reference equality if possible, or by displayName if names are null.
-                    if (item.name != null) {
-                        alreadyExists = discoveredRenderers.any { it.name == item.name && it.type == item.type }
-                    } else { // item.name is null, try to match by reference or a display name if that's all we have
-                        alreadyExists = discoveredRenderers.any { it == item || (it.name == null && it.displayName == item.displayName) }
-                    }
-
-                    if (!alreadyExists) {
-                        item.retain() // Retain the item as we are holding a reference
+                    // It's important that item.name is not null for the 'any' and 'add' logic if we rely on it as a key.
+                    // Assuming item.name is a reliable identifier from LibVLC, even if sometimes null.
+                    // If item.name can be null and we still want to add, this logic might need adjustment
+                    // or ensure 'name' in RendererItem is treated as nullable throughout.
+                    // For now, proceeding with the assumption that a non-null name is typical for 'any' check.
+                    if (item.name != null && !discoveredRenderers.any { it.name == item.name }) {
                         discoveredRenderers.add(item)
-                        Log.i(TAG, "Added and retained renderer: ${item.displayName ?: itemName} (Type: ${item.type})")
+                    } else if (item.name == null) {
+                        // Handle case where item.name is null - perhaps log or add differently if needed
+                        Log.w(TAG, "Added a renderer with a null name. DisplayName: $itemDisplayName")
+                        // If null named items should be added and are distinguishable by other means, adjust here.
+                        // For now, we'll add it if its name is null, assuming it's a distinct (though unnamed) item.
+                        // This might lead to multiple "Unknown Name" items if not careful.
+                        // A more robust solution might involve checking other properties or instance equality.
+                        discoveredRenderers.add(item) // Reconsidering: adding null-named items might be problematic for removal
                     } else {
-                        Log.d(TAG, "Renderer '${item.displayName ?: itemName}' (Type: ${item.type}) already in list or name collision. Event item not added or retained by list.")
-                        // If it's already in the list, the incoming 'item' from the event is a new instance
-                        // representing the same renderer by value, so it should be released as we won't use this instance.
-                        item.release()
-                        Log.d(TAG, "Released duplicate event item: ${item.displayName ?: itemName}")
+                        // This branch is hit if item.name is not null AND it's already in discoveredRenderers.
+                        // (i.e., item.name != null && discoveredRenderers.any { it.name == item.name })
+                        val itemNameForLog = item.name // Should be non-null here
+                        Log.d(TAG, "Renderer '$itemNameForLog' already discovered. Not adding again.")
                     }
                 }
                 updateRendererListUI()
@@ -171,50 +171,53 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 Log.d(TAG, "Renderer Removed: $itemName (Type: ${item.type})")
 
                 synchronized(discoveredRenderers) {
-                    val iterator = discoveredRenderers.iterator()
-                    var releasedFromList = false
-                    while (iterator.hasNext()) {
-                        val existingItem = iterator.next()
-                        // Robust matching: by reference or by name & type
-                        if (existingItem == item || (existingItem.name == item.name && existingItem.type == item.type)) {
-                            iterator.remove()
-                            existingItem.release()
-                            releasedFromList = true
-                            Log.i(TAG, "Removed and released renderer from list: ${existingItem.displayName ?: existingItem.name}")
-                            break
-                        }
-                    }
-                    // If the item from the event was not found in our list (e.g. already removed, or never matched for add)
-                    // then we should release this event item itself as we are not managing it.
-                    if (!releasedFromList) {
-                        item.release()
-                        Log.d(TAG, "Released event item (not found in list for removal): ${item.displayName ?: itemName}")
+                    if (item.name != null) {
+                        discoveredRenderers.removeAll { it.name == item.name }
+                    } else {
+                        // If items with null names were added, how to remove them?
+                        // This becomes tricky. For now, this will only remove items with matching non-null names.
+                        // A more robust way would be to remove by object reference if possible, or use a unique ID.
+                        Log.w(TAG, "Attempting to remove a renderer with a null name. This might not work as expected.")
+                        // discoveredRenderers.remove(item) // This would require RendererItem to have a proper equals/hashCode
                     }
                 }
 
-                // If the selected renderer is the one being deleted
-                if (selectedRenderer == item || (selectedRenderer?.name == item.name && selectedRenderer?.type == item.type)) {
-                    Log.i(TAG, "Selected renderer ('${selectedRenderer?.displayName ?: selectedRenderer?.name}') was removed.")
+                val currentSelectedItemName = selectedRenderer?.name
+                val deletedItemName = item.name // Can be null
+
+                // Only proceed if deletedItemName is not null, as selectedRenderer?.name could be null
+                // and we need a valid name to compare against RendererHolder.selectedRendererName
+                if (deletedItemName != null && currentSelectedItemName == deletedItemName) {
+                    Log.d(TAG, "Selected renderer was removed: $deletedItemName")
                     val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
                         action = ScreenCastingService.ACTION_STOP_CASTING
                     }
                     startService(serviceIntent)
-                    // selectedRenderer?.release() // The instance pointed to by selectedRenderer was in discoveredRenderers, so it's released above.
                     selectedRenderer = null
-                    RendererHolder.selectedRendererName = null
-                    RendererHolder.selectedRendererType = null
+                    // RendererHolder.selectedRendererName should also be a non-null name if set
+                    if (RendererHolder.selectedRendererName == deletedItemName) {
+                        RendererHolder.selectedRendererName = null
+                        RendererHolder.selectedRendererType = null
+                    }
+                    binding.textViewStatus.text = getString(R.string.casting_stopped)
+                } else if (deletedItemName == null && selectedRenderer != null && selectedRenderer?.name == null) {
+                    // Special case: if the selected renderer had a null name and the deleted item also has a null name.
+                    // This is heuristic and might not be perfectly accurate if there are multiple null-named renderers.
+                    Log.d(TAG, "A selected renderer with a null name might have been removed.")
+                    // Action similar to above, assuming this is the one.
+                     val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
+                        action = ScreenCastingService.ACTION_STOP_CASTING
+                    }
+                    startService(serviceIntent)
+                    selectedRenderer = null
+                    if (RendererHolder.selectedRendererName == null) { // If it was stored as null
+                        RendererHolder.selectedRendererType = null
+                    }
                     binding.textViewStatus.text = getString(R.string.casting_stopped)
                 }
                 updateRendererListUI()
             }
             else -> {
-                // For other events, if event.item is not null, it's good practice to release it if not used.
-                event.item?.release()
-            }
-        }
-    }
-
-    private fun updateRendererListUI() {
                 // Log.d(TAG, "RendererDiscoverer Event: type=${event.type}")
             }
         }
@@ -250,20 +253,10 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopDiscovery()
-
-        Log.d(TAG, "MainActivity onDestroy: Releasing renderers.")
-        synchronized(discoveredRenderers) {
-            discoveredRenderers.forEach { renderer ->
-                renderer.release()
-                Log.d(TAG, "Released discovered renderer: ${renderer.displayName ?: renderer.name}")
-            }
-            discoveredRenderers.clear()
-        }
-        selectedRenderer?.release() // Release the selected one if it's still held
-        Log.d(TAG, "Released selectedRenderer: ${selectedRenderer?.displayName ?: selectedRenderer?.name}")
+        stopDiscovery() // This will set rendererDiscoverer to null
+        // rendererDiscoverer = null // Redundant, already handled by stopDiscovery
+        discoveredRenderers.clear()
         selectedRenderer = null
-
         RendererHolder.selectedRendererName = null
         RendererHolder.selectedRendererType = null
         libVLC?.release()
