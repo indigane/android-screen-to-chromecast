@@ -255,8 +255,10 @@ class ScreenCastingService : Service() {
             mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
 
             mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add buffer
-            mediaRecorder?.setOnInfoListener { _, what, _ ->
+            mediaRecorder?.setOnInfoListener { mr, what, extra -> // Added mr and extra to parameters
+                Log.i(TAG, "MediaRecorder OnInfo: what=$what, extra=$extra, currentSegmentIndex=$tsSegmentIndex")
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    Log.e(TAG, "!!!! MAX DURATION REACHED for segment $tsSegmentIndex !!!! Calling handleSegmentCompletion. (Extra code: $extra)") // Log.e for visibility
                     handleSegmentCompletion()
                 }
             }
