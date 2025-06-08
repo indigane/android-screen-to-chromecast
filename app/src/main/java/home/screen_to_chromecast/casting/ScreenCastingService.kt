@@ -15,7 +15,9 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.DisplayMetrics // Keep this for screenDensity
 import android.util.Log
 // import android.view.Surface // No longer needed for MediaCodec
@@ -106,6 +108,10 @@ class ScreenCastingService : Service() {
     private var tsSegmentIndex = 0 // Changed to Int
     private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
 
+    // Handler for timed segment rollover
+    private var segmentRolloverHandler: Handler? = null
+    private var segmentRolloverRunnable: Runnable? = null
+
 
     override fun onCreate() {
         super.onCreate()
@@ -134,6 +140,9 @@ class ScreenCastingService : Service() {
         }
         hlsPlaylistFile = File(hlsFilesDir, "playlist.m3u8")
         screenDensity = resources.displayMetrics.densityDpi // Get screen density once
+
+        segmentRolloverHandler = Handler(Looper.getMainLooper()) // Initialize handler
+
         Log.d(TAG, "ScreenCastingService created. HLS dir: ${hlsFilesDir?.absolutePath}, Density: $screenDensity")
     }
 
@@ -254,12 +263,15 @@ class ScreenCastingService : Service() {
             mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
             mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
 
-            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add buffer
-            mediaRecorder?.setOnInfoListener { mr, what, extra -> // Added mr and extra to parameters
+            // setMaxDuration is still useful as a safety net, but not the primary rollover mechanism
+            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 2000) // Increased buffer slightly for safety
+
+            mediaRecorder?.setOnInfoListener { _, what, extra -> // mr parameter removed as it's not used
                 Log.i(TAG, "MediaRecorder OnInfo: what=$what, extra=$extra, currentSegmentIndex=$tsSegmentIndex")
+                // MAX_DURATION_REACHED is no longer the primary mechanism for rollover.
+                // It can be logged here if it still occurs, but handleSegmentCompletion() is now called by timer.
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    Log.e(TAG, "!!!! MAX DURATION REACHED for segment $tsSegmentIndex !!!! Calling handleSegmentCompletion. (Extra code: $extra)") // Log.e for visibility
-                    handleSegmentCompletion()
+                    Log.w(TAG, "MediaRecorder unexpectedly hit MAX_DURATION_REACHED for segment $tsSegmentIndex. Rollover should be handled by timer. Extra: $extra")
                 }
             }
             mediaRecorder?.setOnErrorListener { _, what, extra ->
@@ -277,6 +289,22 @@ class ScreenCastingService : Service() {
 
             mediaRecorder?.start()
             Log.i(TAG, "MediaRecorder started for segment $tsSegmentIndex")
+
+            // Cancel any existing runnable
+            segmentRolloverRunnable?.let { segmentRolloverHandler?.removeCallbacks(it) }
+
+            if (isEncoding) { // Only schedule if we are actively encoding
+                segmentRolloverRunnable = Runnable {
+                    if (!isEncoding) { // Double check, state might have changed
+                        Log.d(TAG, "Segment rollover timer fired, but encoding has stopped. Ignoring.")
+                        return@Runnable
+                    }
+                    Log.d(TAG, "Timer fired for segment $tsSegmentIndex. Attempting manual rollover.")
+                    handleSegmentCompletion()
+                }
+                segmentRolloverHandler?.postDelayed(segmentRolloverRunnable!!, SEGMENT_DURATION_SECONDS * 1000L)
+                Log.d(TAG, "Scheduled manual rollover for segment $tsSegmentIndex in ${SEGMENT_DURATION_SECONDS}s")
+            }
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to prepare or start MediaRecorder for segment $tsSegmentIndex", e)
@@ -290,7 +318,7 @@ class ScreenCastingService : Service() {
     }
 
     private fun handleSegmentCompletion() {
-        Log.i(TAG, "Segment $tsSegmentIndex completed (max duration reached).")
+        Log.i(TAG, "Segment $tsSegmentIndex completion triggered. Current isEncoding: $isEncoding")
 
         // The current MediaRecorder and its VirtualDisplay will be reset/released by startNewMediaRecorderSegment
         // or by stopCastingInternals if isEncoding becomes false.
@@ -457,6 +485,13 @@ class ScreenCastingService : Service() {
     private fun stopCastingInternals() {
         Log.i(TAG, "Stopping casting internals...")
         isCasting = false
+
+        // Cancel any pending segment rollover timer first
+        segmentRolloverRunnable?.let {
+            segmentRolloverHandler?.removeCallbacks(it)
+            Log.d(TAG, "Cancelled pending segment rollover timer in stopCastingInternals.")
+        }
+        segmentRolloverRunnable = null // Clear it
 
         val wasEncoding = isEncoding
         isEncoding = false
