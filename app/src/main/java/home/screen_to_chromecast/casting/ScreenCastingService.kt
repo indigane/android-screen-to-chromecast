@@ -198,15 +198,18 @@ class ScreenCastingService : Service() {
                 }
 
                 isEncoding = true
-                tsSegmentIndex = 0 // Changed to Int
+                tsSegmentIndex = 0 // Ensure tsSegmentIndex is 0 before the first call
                 hlsPlaylistFile?.delete()
-                updateHlsPlaylist(finished = false) // Create initial empty playlist
+                // updateHlsPlaylist(finished = false) // Moved after startNewMediaRecorderSegment
 
                 if (!startNewMediaRecorderSegment()) {
-                    Log.e(TAG, "Failed to start initial MediaRecorder segment.")
+                    Log.e(TAG, "Failed to start initial MediaRecorder segment. Stopping service.")
+                    updateNotification("Error: Could not start screen recording for HLS.")
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
+                // If startNewMediaRecorderSegment was successful, tsSegmentIndex is now 1
+                updateHlsPlaylist(finished = false) // Now generates playlist with segment1.ts
                 startServiceDiscovery()
             }
             ACTION_STOP_CASTING -> {
@@ -321,13 +324,23 @@ class ScreenCastingService : Service() {
 
                 writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
-                if (tsSegmentIndex > 0) {
-                    // Corrected loop to use Int consistently with tsSegmentIndex
+                // tsSegmentIndex is 1 when the first segment *just started* due to the previous step's changes.
+                // The playlist is updated *after* startNewMediaRecorderSegment (which increments tsSegmentIndex).
+                // So, when updateHlsPlaylist is called for the very first time (not finished, just started):
+                // - tsSegmentIndex will be 1.
+                // - firstSegmentInPlaylist will be max(1, 1 - MAX_SEGMENTS_IN_PLAYLIST + 1), which is 1 if MAX_SEGMENTS_IN_PLAYLIST >=1
+                if (tsSegmentIndex == 1 && !finished) { // Special case for initial playlist when segment1.ts has just started
+                    writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
+                    writer.write("segment1.ts\n")
+                } else if (tsSegmentIndex > 0) { // For subsequent updates or when finishing
+                    // The loop should correctly handle listing up to MAX_SEGMENTS_IN_PLAYLIST segments
+                    // firstSegmentInPlaylist is already calculated to handle the sliding window.
                     for (i in firstSegmentInPlaylist..tsSegmentIndex) {
                         writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
                         writer.write("segment$i.ts\n")
                     }
                 }
+                // No segment entry if tsSegmentIndex is 0, which shouldn't happen if called after first segment start.
 
                 if (finished) {
                     writer.write("#EXT-X-ENDLIST\n")
