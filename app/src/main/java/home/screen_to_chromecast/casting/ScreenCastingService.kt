@@ -10,16 +10,14 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.MediaRecorder // Added for MediaRecorder
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.util.DisplayMetrics // Keep this for screenDensity
+import android.util.DisplayMetrics
 import android.util.Log
-// import android.view.Surface // No longer needed for MediaCodec
-import android.view.WindowManager // May not be needed if only for density
 import androidx.core.app.NotificationCompat
 import home.screen_to_chromecast.MainActivity
 import home.screen_to_chromecast.R
@@ -30,7 +28,6 @@ import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererItem
 import org.videolan.libvlc.interfaces.ILibVLC
 import java.io.File
-// import java.io.FileOutputStream // No longer needed for direct segment writing
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -93,22 +90,19 @@ class ScreenCastingService : Service() {
     private var targetRendererType: String? = null
     private val serviceRendererListener = ServiceRendererEventListener()
 
-    // HLS Server fields
     private var hlsServer: HLSServer? = null
     private var hlsFilesDir: File? = null
     private val hlsPort = 8088
 
-    // MediaRecorder HLS fields
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
-    @Volatile private var isEncoding = false // Flag to control overall encoding process
+    @Volatile private var isEncoding = false
     private var hlsPlaylistFile: File? = null
-    private var tsSegmentIndex = 0 // Changed to Int
+    private var tsSegmentIndex = 0
     private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
 
-
     override fun onCreate() {
-        Log.i(TAG, "ScreenCastingService onCreate called.") // Added Log
+        Log.i(TAG, "ScreenCastingService onCreate called.")
         super.onCreate()
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val libVlcArgs = ArrayList<String>()
@@ -134,19 +128,17 @@ class ScreenCastingService : Service() {
             }
         }
         hlsPlaylistFile = File(hlsFilesDir, "playlist.m3u8")
-        screenDensity = resources.displayMetrics.densityDpi // Get screen density once
+        screenDensity = resources.displayMetrics.densityDpi
         Log.d(TAG, "ScreenCastingService created. HLS dir: ${hlsFilesDir?.absolutePath}, Density: $screenDensity")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "ScreenCastingService onStartCommand called with action: ${intent?.action}, intent extras: ${intent?.extras?.let { bundle -> bundle.keySet().joinToString { key -> "$key=${bundle.get(key)}" } } ?: "null"}")
         val action = intent?.action
-        // Log.d(TAG, "onStartCommand received with action: $action") // Replaced by the more detailed log above
 
         if (intent?.action == ACTION_START_CASTING) {
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
             val resultDataPresent = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) != null
-            // Logging RendererHolder details here before they are locally assigned in the 'when' block
             Log.d(TAG, "ACTION_START_CASTING intent received: resultCode=$resultCode, resultDataPresent=$resultDataPresent, current TargetRendererName=${RendererHolder.selectedRendererName}, current TargetRendererType=${RendererHolder.selectedRendererType}")
         }
 
@@ -181,7 +173,7 @@ class ScreenCastingService : Service() {
 
                 if (mediaProjection == null) {
                     Log.e(TAG, "MediaProjection could not be obtained. Stopping.")
-                    updateNotification("Error: Failed to start screen capture session.")
+                    updateNotification("Error: Failed to start screen capture session.") // Consider a string resource
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
@@ -207,9 +199,9 @@ class ScreenCastingService : Service() {
                 }
 
                 isEncoding = true
-                tsSegmentIndex = 0 // Changed to Int
+                tsSegmentIndex = 0
                 hlsPlaylistFile?.delete()
-                updateHlsPlaylist(finished = false) // Create initial empty playlist
+                updateHlsPlaylist(finished = false)
 
                 if (!startNewMediaRecorderSegment()) {
                     Log.e(TAG, "Failed to start initial MediaRecorder segment.")
@@ -232,11 +224,10 @@ class ScreenCastingService : Service() {
             return false
         }
 
-        // Clean up previous MediaRecorder and VirtualDisplay
         mediaRecorder?.apply {
             setOnInfoListener(null)
             setOnErrorListener(null)
-            try { stop() } catch (e: RuntimeException) { Log.e(TAG, "MediaRecorder stop failed", e) } // Catch RuntimeException for stop
+            try { stop() } catch (e: RuntimeException) { Log.w(TAG, "Previous MediaRecorder stop failed (may already be stopped): ${e.message}") }
             reset()
             release()
         }
@@ -249,73 +240,68 @@ class ScreenCastingService : Service() {
         Log.i(TAG, "Starting new MediaRecorder segment: index=$tsSegmentIndex, file=${currentSegmentFile.absolutePath}")
 
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
-        var audioSourceSetSuccessfully = false
-
+        var audioSourceSet = false
         try {
             // 1. Set Sources
             try {
                 mediaRecorder?.setAudioSource(MediaRecorder.AudioSource.MIC)
-                audioSourceSetSuccessfully = true
-                Log.d(TAG, "AudioSource.MIC set.")
+                audioSourceSet = true
+                Log.d(TAG, "AudioSource set to MIC")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to set AudioSource.MIC. May attempt video-only. Error: ${e.message}")
+                Log.w(TAG, "Failed to set AudioSource.MIC. Error: ${e.message}")
             }
+
             mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            Log.d(TAG, "VideoSource.SURFACE set.")
+            Log.d(TAG, "VideoSource set to SURFACE")
 
             // 2. Set Output Format
             mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_2_TS)
-            Log.d(TAG, "OutputFormat.MPEG_2_TS set.")
+            Log.d(TAG, "OutputFormat set to MPEG_2_TS")
 
-            // 3. Set Output File Path (must be after OutputFormat)
+            // 3. Set Output File Path
             mediaRecorder?.setOutputFile(currentSegmentFile.absolutePath)
-            Log.d(TAG, "OutputFile set to: ${currentSegmentFile.absolutePath}")
+            Log.d(TAG, "OutputFile set to ${currentSegmentFile.absolutePath}")
 
             // 4. Set Encoders
-            if (audioSourceSetSuccessfully) {
+            if (audioSourceSet) {
                 try {
                     mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                     mediaRecorder?.setAudioSamplingRate(44100)
                     mediaRecorder?.setAudioEncodingBitRate(96000)
-                    Log.d(TAG, "AudioEncoder.AAC and params set.")
+                    Log.d(TAG, "AudioEncoder set to AAC with 44100Hz, 96kbps")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to set up audio encoder parameters. Audio may not be recorded. Error: ${e.message}")
+                    Log.w(TAG, "Failed to set up audio encoder parameters. Error: ${e.message}")
                 }
             }
             mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            Log.d(TAG, "VideoEncoder.H264 set.")
+            Log.d(TAG, "VideoEncoder set to H264")
 
             // 5. Set Video Parameters
             mediaRecorder?.setVideoEncodingBitRate(VIDEO_BITRATE)
             mediaRecorder?.setVideoFrameRate(VIDEO_FRAME_RATE)
             mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
-            Log.d(TAG, "Video parameters (bitrate, framerate, size) set.")
+            Log.d(TAG, "Video parameters set: $VIDEO_WIDTH x $VIDEO_HEIGHT @ $VIDEO_FRAME_RATE fps, $VIDEO_BITRATE bps")
 
-            // 6. Set Max Duration & Listeners (before prepare)
-            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500)
-            Log.d(TAG, "MaxDuration set to: ${SEGMENT_DURATION_SECONDS * 1000 + 500} ms")
+            // 6. Set Max Duration & Listeners
+            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add a small buffer
+            Log.d(TAG, "MaxDuration set for segment to ${SEGMENT_DURATION_SECONDS * 1000 + 500}ms")
 
             mediaRecorder?.setOnInfoListener { _, what, _ ->
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    handleSegmentCompletion() // Simplified call
+                    handleSegmentCompletion()
                 }
             }
-            mediaRecorder?.setOnErrorListener { mr, what, extra -> // Added mr instance
-                Log.e(TAG, "MediaRecorder error (what=$what, extra=$extra) on recorder instance: $mr")
+            mediaRecorder?.setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "MediaRecorder error (what=$what, extra=$extra)")
                 updateNotification(getString(R.string.error_mediarecorder, what, extra))
-                // Stop only if it's the current instance or if mediaRecorder is already null (during cleanup)
-                if (mr == mediaRecorder || mediaRecorder == null) {
-                    stopCastingInternals()
-                }
+                stopCastingInternals()
             }
-            Log.d(TAG, "Listeners set.")
+            Log.d(TAG, "Listeners set")
 
             // 7. Prepare
             mediaRecorder?.prepare()
-                stopCastingInternals()
-            }
+            Log.i(TAG, "MediaRecorder prepared for segment $tsSegmentIndex")
 
-            mediaRecorder?.prepare()
             val recorderSurface = mediaRecorder?.surface ?: throw IOException("MediaRecorder surface is null after prepare")
 
             virtualDisplay = mediaProjection?.createVirtualDisplay("ScreenCapture", VIDEO_WIDTH, VIDEO_HEIGHT, screenDensity,
@@ -338,11 +324,7 @@ class ScreenCastingService : Service() {
 
     private fun handleSegmentCompletion() {
         Log.i(TAG, "Segment $tsSegmentIndex completed (max duration reached).")
-
-        // The current MediaRecorder and its VirtualDisplay will be reset/released by startNewMediaRecorderSegment
-        // or by stopCastingInternals if isEncoding becomes false.
-        // We must call updateHlsPlaylist *before* startNewMediaRecorderSegment increments tsSegmentIndex
-        if (tsSegmentIndex > 0) {
+        if (tsSegmentIndex > 0) { // Ensure a segment was actually being recorded
             updateHlsPlaylist()
         }
 
@@ -375,7 +357,6 @@ class ScreenCastingService : Service() {
                 writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
 
                 if (tsSegmentIndex > 0) {
-                    // Corrected loop to use Int consistently with tsSegmentIndex
                     for (i in firstSegmentInPlaylist..tsSegmentIndex) {
                         writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
                         writer.write("segment$i.ts\n")
@@ -387,7 +368,6 @@ class ScreenCastingService : Service() {
                 }
             }
             Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
-            // Add Playlist Content Read-Back Log
             try {
                 val playlistContent = hlsPlaylistFile?.readText() ?: "Playlist file not found or empty after write attempt."
                 Log.i(TAG, "Playlist content read back immediately after write (tsSegmentIndex: $tsSegmentIndex, finished: $finished):\n$playlistContent")
@@ -400,7 +380,6 @@ class ScreenCastingService : Service() {
     }
 
     private fun startServiceDiscovery() {
-        // ... (content of startServiceDiscovery - unchanged from previous state)
         if (libVLC == null) {
             Log.e(TAG, "LibVLC instance is null, cannot start service discovery.")
             updateNotification(getString(R.string.error_libvlc_not_ready))
@@ -423,7 +402,6 @@ class ScreenCastingService : Service() {
     }
 
     private fun stopServiceDiscovery() {
-        // ... (content of stopServiceDiscovery - unchanged)
         serviceRendererDiscoverer?.setEventListener(null)
         serviceRendererDiscoverer?.stop()
         serviceRendererDiscoverer = null
@@ -431,7 +409,6 @@ class ScreenCastingService : Service() {
     }
 
     private inner class ServiceRendererEventListener : org.videolan.libvlc.RendererDiscoverer.EventListener {
-        // ... (content of ServiceRendererEventListener - unchanged)
         override fun onEvent(event: org.videolan.libvlc.RendererDiscoverer.Event?) {
             if (libVLC == null || serviceRendererDiscoverer == null || event == null || !isCasting) {
                 return
@@ -489,7 +466,6 @@ class ScreenCastingService : Service() {
     }
 
     private inner class MediaProjectionCallback : MediaProjection.Callback() {
-        // ... (content of MediaProjectionCallback - unchanged)
         override fun onStop() {
             Log.w(TAG, "MediaProjection session stopped by system or user.")
             if (isCasting) {
@@ -510,7 +486,7 @@ class ScreenCastingService : Service() {
         try {
             mediaRecorder?.stop()
             Log.d(TAG, "MediaRecorder stopped.")
-        } catch (e: RuntimeException) { // MediaRecorder.stop() can throw RuntimeException
+        } catch (e: RuntimeException) {
             Log.w(TAG, "MediaRecorder stop failed: ${e.message}")
         }
         mediaRecorder?.reset()
@@ -565,6 +541,10 @@ class ScreenCastingService : Service() {
         stopSelf()
     }
 
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+
     override fun onDestroy() {
         Log.i(TAG, "ScreenCastingService onDestroy.")
         stopCastingInternals()
@@ -585,7 +565,6 @@ class ScreenCastingService : Service() {
     }
 
     private fun createNotificationChannel() {
-        // ... (content of createNotificationChannel - unchanged)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW)
             channel.description = getString(R.string.notification_channel_description)
@@ -594,7 +573,6 @@ class ScreenCastingService : Service() {
     }
 
     private fun createNotification(contentText: String): Notification {
-        // ... (content of createNotification - unchanged)
         val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -616,13 +594,8 @@ class ScreenCastingService : Service() {
     }
 
     private fun updateNotification(contentText: String) {
-        // ... (content of updateNotification - unchanged)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, createNotification(contentText))
-    }
-
-    override fun onBind(intent: Intent?): IBinder? {
-        return null // Or your actual binder if you implement one later
     }
 
     companion object {
@@ -640,6 +613,7 @@ class ScreenCastingService : Service() {
         private const val VIDEO_HEIGHT = 720
         private const val VIDEO_BITRATE = 2 * 1024 * 1024 // 2 Mbps
         private const val VIDEO_FRAME_RATE = 30
+        // IFRAME_INTERVAL_SECONDS not directly used by MediaRecorder in this way.
 
         // HLS parameters
         private const val MAX_SEGMENTS_IN_PLAYLIST = 5
