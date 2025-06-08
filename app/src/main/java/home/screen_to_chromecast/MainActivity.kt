@@ -2,14 +2,11 @@ package home.screen_to_chromecast
 
 import android.app.Activity
 import android.content.Intent
-import android.Manifest // Added import
-import android.content.pm.PackageManager // Added import
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.util.Log
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat // Added import
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import home.screen_to_chromecast.casting.ScreenCastingService
@@ -30,47 +27,22 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     private lateinit var rendererAdapter: ArrayAdapter<String>
     private var selectedRenderer: RendererItem? = null
 
-    // Launcher for MediaProjection permission (remains largely the same)
-    private val requestMediaProjectionLauncher =
+    private val requestMediaProjection =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            Log.d(TAG, "MediaProjection permission result: resultCode=${result.resultCode}, dataPresent=${result.data != null}")
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                Log.i(TAG, "MediaProjection permission GRANTED by user.")
+                Log.d(TAG, "MediaProjection permission granted.")
                 val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
                     action = ScreenCastingService.ACTION_START_CASTING
                     putExtra(ScreenCastingService.EXTRA_RESULT_CODE, result.resultCode)
                     putExtra(ScreenCastingService.EXTRA_RESULT_DATA, result.data)
-                    // selectedRenderer should already be in RendererHolder
                 }
-                Log.i(TAG, "Starting ScreenCastingService with intent: action=${serviceIntent.action}, extras present: ${serviceIntent.extras?.keySet()?.joinToString()}")
                 startForegroundService(serviceIntent)
             } else {
-                Log.w(TAG, "MediaProjection permission DENIED by user or no data.")
-                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission was denied."
+                Log.w(TAG, "MediaProjection permission denied.")
+                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission denied."
                 RendererHolder.selectedRendererName = null
                 RendererHolder.selectedRendererType = null
                 selectedRenderer = null
-            }
-        }
-
-    // New launcher for RECORD_AUDIO permission
-    private val requestAudioPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
-            if (isGranted) {
-                Log.i(TAG, "RECORD_AUDIO permission granted by user.") // Changed to Log.i for emphasis
-                // Now that audio permission is granted, request MediaProjection
-                binding.textViewStatus.text = getString(R.string.status_requesting_media_projection)
-                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                Log.d(TAG, "Proceeding to launch MediaProjection permission request.")
-                requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
-            } else {
-                Log.w(TAG, "RECORD_AUDIO permission denied by user.")
-                binding.textViewStatus.text = getString(R.string.error_audio_permission_denied)
-                // Clear selection or handle UI state as appropriate
-                selectedRenderer = null
-                RendererHolder.selectedRendererName = null
-                RendererHolder.selectedRendererType = null
-                // Consider also resetting the status text or device list selection UI
             }
         }
 
@@ -118,32 +90,11 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 // Use direct field access as confirmed by Javadoc for 3.6.1
                 val clickedRendererName = clickedRenderer.name ?: "Unknown Name"
                 val clickedRendererDisplayName = clickedRenderer.displayName ?: clickedRendererName
-                Log.i(TAG, "Renderer item clicked: ${clickedRenderer.displayName ?: clickedRenderer.name}") // Added .i log
-                Log.d(TAG, "Selected renderer details: Name=$clickedRendererName, Type=${clickedRenderer.type}, DisplayName=$clickedRendererDisplayName")
+                Log.d(TAG, "Selected renderer: $clickedRendererName (Type: ${clickedRenderer.type}, DisplayName: $clickedRendererDisplayName)")
+                binding.textViewStatus.text = getString(R.string.casting_to, clickedRendererDisplayName)
 
-                binding.textViewStatus.text = getString(R.string.status_requesting_permissions)
-                Log.d(TAG, "Checking/Requesting RECORD_AUDIO permission.") // Added log
-
-                // Request RECORD_AUDIO permission first
-                when {
-                    ContextCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED -> {
-                        Log.d(TAG, "RECORD_AUDIO permission was already granted. Launching MediaProjection request directly.")
-                        binding.textViewStatus.text = getString(R.string.status_requesting_media_projection)
-                        val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                        requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
-                    }
-                    shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> {
-                        Log.i(TAG, "Showing rationale for RECORD_AUDIO permission is recommended but not implemented for this step. Requesting permission.")
-                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                    else -> {
-                        Log.d(TAG, "RECORD_AUDIO permission not yet granted. Launching audio permission request via requestAudioPermissionLauncher.")
-                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }
+                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                requestMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
             }
         }
     }
@@ -190,26 +141,26 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 val itemDisplayName = item.displayName ?: "N/A"
                 Log.d(TAG, "Renderer Added: $itemName (Type: ${item.type}, DisplayName: $itemDisplayName)")
                 synchronized(discoveredRenderers) {
-                    // It's important that item.name is not null for the 'any' and 'add' logic if we rely on it as a key.
-                    // Assuming item.name is a reliable identifier from LibVLC, even if sometimes null.
-                    // If item.name can be null and we still want to add, this logic might need adjustment
-                    // or ensure 'name' in RendererItem is treated as nullable throughout.
-                    // For now, proceeding with the assumption that a non-null name is typical for 'any' check.
-                    if (item.name != null && !discoveredRenderers.any { it.name == item.name }) {
+                    var alreadyExists = false
+                    // Check if a renderer with the same name and type already exists to prevent duplicates.
+                    // This is a common pattern for LibVLC renderer discovery.
+                    // Also handle null names by reference equality if possible, or by displayName if names are null.
+                    if (item.name != null) {
+                        alreadyExists = discoveredRenderers.any { it.name == item.name && it.type == item.type }
+                    } else { // item.name is null, try to match by reference or a display name if that's all we have
+                        alreadyExists = discoveredRenderers.any { it == item || (it.name == null && it.displayName == item.displayName) }
+                    }
+
+                    if (!alreadyExists) {
+                        item.retain() // Retain the item as we are holding a reference
                         discoveredRenderers.add(item)
-                    } else if (item.name == null) {
-                        // Handle case where item.name is null - perhaps log or add differently if needed
-                        Log.w(TAG, "Added a renderer with a null name. DisplayName: $itemDisplayName")
-                        // If null named items should be added and are distinguishable by other means, adjust here.
-                        // For now, we'll add it if its name is null, assuming it's a distinct (though unnamed) item.
-                        // This might lead to multiple "Unknown Name" items if not careful.
-                        // A more robust solution might involve checking other properties or instance equality.
-                        discoveredRenderers.add(item) // Reconsidering: adding null-named items might be problematic for removal
+                        Log.i(TAG, "Added and retained renderer: ${item.displayName ?: itemName} (Type: ${item.type})")
                     } else {
-                        // This branch is hit if item.name is not null AND it's already in discoveredRenderers.
-                        // (i.e., item.name != null && discoveredRenderers.any { it.name == item.name })
-                        val itemNameForLog = item.name // Should be non-null here
-                        Log.d(TAG, "Renderer '$itemNameForLog' already discovered. Not adding again.")
+                        Log.d(TAG, "Renderer '${item.displayName ?: itemName}' (Type: ${item.type}) already in list or name collision. Event item not added or retained by list.")
+                        // If it's already in the list, the incoming 'item' from the event is a new instance
+                        // representing the same renderer by value, so it should be released as we won't use this instance.
+                        item.release()
+                        Log.d(TAG, "Released duplicate event item: ${item.displayName ?: itemName}")
                     }
                 }
                 updateRendererListUI()
@@ -220,53 +171,50 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 Log.d(TAG, "Renderer Removed: $itemName (Type: ${item.type})")
 
                 synchronized(discoveredRenderers) {
-                    if (item.name != null) {
-                        discoveredRenderers.removeAll { it.name == item.name }
-                    } else {
-                        // If items with null names were added, how to remove them?
-                        // This becomes tricky. For now, this will only remove items with matching non-null names.
-                        // A more robust way would be to remove by object reference if possible, or use a unique ID.
-                        Log.w(TAG, "Attempting to remove a renderer with a null name. This might not work as expected.")
-                        // discoveredRenderers.remove(item) // This would require RendererItem to have a proper equals/hashCode
+                    val iterator = discoveredRenderers.iterator()
+                    var releasedFromList = false
+                    while (iterator.hasNext()) {
+                        val existingItem = iterator.next()
+                        // Robust matching: by reference or by name & type
+                        if (existingItem == item || (existingItem.name == item.name && existingItem.type == item.type)) {
+                            iterator.remove()
+                            existingItem.release()
+                            releasedFromList = true
+                            Log.i(TAG, "Removed and released renderer from list: ${existingItem.displayName ?: existingItem.name}")
+                            break
+                        }
+                    }
+                    // If the item from the event was not found in our list (e.g. already removed, or never matched for add)
+                    // then we should release this event item itself as we are not managing it.
+                    if (!releasedFromList) {
+                        item.release()
+                        Log.d(TAG, "Released event item (not found in list for removal): ${item.displayName ?: itemName}")
                     }
                 }
 
-                val currentSelectedItemName = selectedRenderer?.name
-                val deletedItemName = item.name // Can be null
-
-                // Only proceed if deletedItemName is not null, as selectedRenderer?.name could be null
-                // and we need a valid name to compare against RendererHolder.selectedRendererName
-                if (deletedItemName != null && currentSelectedItemName == deletedItemName) {
-                    Log.d(TAG, "Selected renderer was removed: $deletedItemName")
+                // If the selected renderer is the one being deleted
+                if (selectedRenderer == item || (selectedRenderer?.name == item.name && selectedRenderer?.type == item.type)) {
+                    Log.i(TAG, "Selected renderer ('${selectedRenderer?.displayName ?: selectedRenderer?.name}') was removed.")
                     val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
                         action = ScreenCastingService.ACTION_STOP_CASTING
                     }
                     startService(serviceIntent)
+                    // selectedRenderer?.release() // The instance pointed to by selectedRenderer was in discoveredRenderers, so it's released above.
                     selectedRenderer = null
-                    // RendererHolder.selectedRendererName should also be a non-null name if set
-                    if (RendererHolder.selectedRendererName == deletedItemName) {
-                        RendererHolder.selectedRendererName = null
-                        RendererHolder.selectedRendererType = null
-                    }
-                    binding.textViewStatus.text = getString(R.string.casting_stopped)
-                } else if (deletedItemName == null && selectedRenderer != null && selectedRenderer?.name == null) {
-                    // Special case: if the selected renderer had a null name and the deleted item also has a null name.
-                    // This is heuristic and might not be perfectly accurate if there are multiple null-named renderers.
-                    Log.d(TAG, "A selected renderer with a null name might have been removed.")
-                    // Action similar to above, assuming this is the one.
-                     val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
-                        action = ScreenCastingService.ACTION_STOP_CASTING
-                    }
-                    startService(serviceIntent)
-                    selectedRenderer = null
-                    if (RendererHolder.selectedRendererName == null) { // If it was stored as null
-                        RendererHolder.selectedRendererType = null
-                    }
+                    RendererHolder.selectedRendererName = null
+                    RendererHolder.selectedRendererType = null
                     binding.textViewStatus.text = getString(R.string.casting_stopped)
                 }
                 updateRendererListUI()
             }
             else -> {
+                // For other events, if event.item is not null, it's good practice to release it if not used.
+                event.item?.release()
+            }
+        }
+    }
+
+    private fun updateRendererListUI() {
                 // Log.d(TAG, "RendererDiscoverer Event: type=${event.type}")
             }
         }
@@ -302,10 +250,20 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopDiscovery() // This will set rendererDiscoverer to null
-        // rendererDiscoverer = null // Redundant, already handled by stopDiscovery
-        discoveredRenderers.clear()
+        stopDiscovery()
+
+        Log.d(TAG, "MainActivity onDestroy: Releasing renderers.")
+        synchronized(discoveredRenderers) {
+            discoveredRenderers.forEach { renderer ->
+                renderer.release()
+                Log.d(TAG, "Released discovered renderer: ${renderer.displayName ?: renderer.name}")
+            }
+            discoveredRenderers.clear()
+        }
+        selectedRenderer?.release() // Release the selected one if it's still held
+        Log.d(TAG, "Released selectedRenderer: ${selectedRenderer?.displayName ?: selectedRenderer?.name}")
         selectedRenderer = null
+
         RendererHolder.selectedRendererName = null
         RendererHolder.selectedRendererType = null
         libVLC?.release()

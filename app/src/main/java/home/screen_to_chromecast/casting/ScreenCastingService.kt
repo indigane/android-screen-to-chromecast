@@ -100,6 +100,7 @@ class ScreenCastingService : Service() {
     private var hlsPlaylistFile: File? = null
     private var tsSegmentIndex = 0
     private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
+    private var isPlaylistReadyForPlayback = false
 
     override fun onCreate() {
         Log.i(TAG, "ScreenCastingService onCreate called.")
@@ -164,6 +165,7 @@ class ScreenCastingService : Service() {
                 }
 
                 isCasting = true
+                currentRendererItem?.release() // Release any previous item
                 currentRendererItem = null
 
                 startForeground(NOTIFICATION_ID, createNotification(getString(R.string.preparing_stream)))
@@ -173,17 +175,19 @@ class ScreenCastingService : Service() {
 
                 if (mediaProjection == null) {
                     Log.e(TAG, "MediaProjection could not be obtained. Stopping.")
-                    updateNotification("Error: Failed to start screen capture session.") // Consider a string resource
+                    updateNotification("Error: Failed to start screen capture session.")
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
 
+                Log.i(TAG, "Attempting to create HLSServer on port $hlsPort with dir: ${hlsFilesDir?.absolutePath}")
                 if (hlsServer == null) {
                     try {
                         hlsFilesDir?.let { dir ->
                             hlsServer = HLSServer(hlsPort, dir)
+                            Log.i(TAG, "Attempting to issue start command to HLSServer (timeout: ${NanoHTTPD.SOCKET_READ_TIMEOUT}ms).")
                             hlsServer?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-                            Log.d(TAG, "HLS server started on port $hlsPort, serving from ${dir.absolutePath}")
+                            Log.i(TAG, "HLSServer start command successfully issued to NanoHTTPD. Check HLSServer's own logs for confirmation of socket listening.")
                         } ?: run {
                             Log.e(TAG, "HLS files directory is null. Cannot start HLS Server.")
                             updateNotification(getString(R.string.error_hls_directory))
@@ -191,7 +195,7 @@ class ScreenCastingService : Service() {
                             return START_NOT_STICKY
                         }
                     } catch (e: IOException) {
-                        Log.e(TAG, "Failed to start HLS server", e)
+                        Log.e(TAG, "IOException during HLSServer start command in ScreenCastingService", e)
                         updateNotification(getString(R.string.error_starting_hls_server))
                         stopCastingInternals()
                         return START_NOT_STICKY
@@ -200,6 +204,7 @@ class ScreenCastingService : Service() {
 
                 isEncoding = true
                 tsSegmentIndex = 0
+                isPlaylistReadyForPlayback = false
                 hlsPlaylistFile?.delete()
                 updateHlsPlaylist(finished = false)
 
@@ -242,7 +247,6 @@ class ScreenCastingService : Service() {
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
         var audioSourceSet = false
         try {
-            // 1. Set Sources
             try {
                 mediaRecorder?.setAudioSource(MediaRecorder.AudioSource.MIC)
                 audioSourceSet = true
@@ -254,15 +258,12 @@ class ScreenCastingService : Service() {
             mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             Log.d(TAG, "VideoSource set to SURFACE")
 
-            // 2. Set Output Format
             mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_2_TS)
             Log.d(TAG, "OutputFormat set to MPEG_2_TS")
 
-            // 3. Set Output File Path
             mediaRecorder?.setOutputFile(currentSegmentFile.absolutePath)
             Log.d(TAG, "OutputFile set to ${currentSegmentFile.absolutePath}")
 
-            // 4. Set Encoders
             if (audioSourceSet) {
                 try {
                     mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -276,14 +277,12 @@ class ScreenCastingService : Service() {
             mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             Log.d(TAG, "VideoEncoder set to H264")
 
-            // 5. Set Video Parameters
             mediaRecorder?.setVideoEncodingBitRate(VIDEO_BITRATE)
             mediaRecorder?.setVideoFrameRate(VIDEO_FRAME_RATE)
             mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
             Log.d(TAG, "Video parameters set: $VIDEO_WIDTH x $VIDEO_HEIGHT @ $VIDEO_FRAME_RATE fps, $VIDEO_BITRATE bps")
 
-            // 6. Set Max Duration & Listeners
-            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500) // Add a small buffer
+            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 500)
             Log.d(TAG, "MaxDuration set for segment to ${SEGMENT_DURATION_SECONDS * 1000 + 500}ms")
 
             mediaRecorder?.setOnInfoListener { _, what, _ ->
@@ -291,14 +290,15 @@ class ScreenCastingService : Service() {
                     handleSegmentCompletion()
                 }
             }
-            mediaRecorder?.setOnErrorListener { _, what, extra ->
-                Log.e(TAG, "MediaRecorder error (what=$what, extra=$extra)")
+            mediaRecorder?.setOnErrorListener { mr, what, extra ->
+                Log.e(TAG, "MediaRecorder error (what=$what, extra=$extra) on recorder instance: $mr")
                 updateNotification(getString(R.string.error_mediarecorder, what, extra))
-                stopCastingInternals()
+                if (mr == mediaRecorder || mediaRecorder == null) {
+                    stopCastingInternals()
+                }
             }
             Log.d(TAG, "Listeners set")
 
-            // 7. Prepare
             mediaRecorder?.prepare()
             Log.i(TAG, "MediaRecorder prepared for segment $tsSegmentIndex")
 
@@ -324,8 +324,18 @@ class ScreenCastingService : Service() {
 
     private fun handleSegmentCompletion() {
         Log.i(TAG, "Segment $tsSegmentIndex completed (max duration reached).")
-        if (tsSegmentIndex > 0) { // Ensure a segment was actually being recorded
+        if (tsSegmentIndex > 0) {
+            Log.i(TAG, "Updating playlist for closed segment. Current segment index: $tsSegmentIndex. Previous segment closed.")
             updateHlsPlaylist()
+            if (!isPlaylistReadyForPlayback) {
+                Log.i(TAG, "First segment ready and playlist updated. Marking playlist as ready for playback.")
+                isPlaylistReadyForPlayback = true
+            }
+        }
+
+        if (isPlaylistReadyForPlayback && mediaPlayer?.hasMedia() == true && mediaPlayer?.renderer != null && mediaPlayer?.isPlaying == false) {
+            Log.i(TAG, "Playlist is ready and Media/Renderer set. Attempting to play from handleSegmentCompletion.")
+            mediaPlayer?.play()
         }
 
         if (isEncoding) {
@@ -411,14 +421,20 @@ class ScreenCastingService : Service() {
     private inner class ServiceRendererEventListener : org.videolan.libvlc.RendererDiscoverer.EventListener {
         override fun onEvent(event: org.videolan.libvlc.RendererDiscoverer.Event?) {
             if (libVLC == null || serviceRendererDiscoverer == null || event == null || !isCasting) {
+                event?.item?.release() // Release item if service is not in a state to handle it
                 return
             }
-            val item = event.item ?: return
+            val item = event.item ?: return // event.item should generally not be null for ItemAdded/ItemDeleted
+
             when (event.type) {
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemAdded -> {
+                    Log.d(TAG, "Service Discovery: Renderer Added - ${item.displayName ?: item.name} (Type: ${item.type})")
                     if (item.name == targetRendererName && item.type == targetRendererType) {
                         Log.i(TAG, "Target renderer '${targetRendererName}' found by service discoverer!")
+                        currentRendererItem?.release() // Release previous item, if any
                         currentRendererItem = item
+                        currentRendererItem?.retain()
+                        Log.d(TAG, "Retained currentRendererItem: ${currentRendererItem?.name}")
                         mediaPlayer?.setRenderer(currentRendererItem)
 
                         val deviceIp = getDeviceIpAddress()
@@ -426,7 +442,7 @@ class ScreenCastingService : Service() {
                             Log.e(TAG, "Could not get device IP address. Cannot start HLS playback.")
                             updateNotification(getString(R.string.error_network_config))
                             stopCastingInternals()
-                            return
+                            return // Return from onEvent
                         }
                         val hlsUrl = "http://$deviceIp:$hlsPort/${hlsPlaylistFile?.name}"
                         Log.i(TAG, "HLS Stream URL for Chromecast: $hlsUrl")
@@ -435,7 +451,7 @@ class ScreenCastingService : Service() {
                             Log.e(TAG, "LibVLC or MediaPlayer became null before playing.")
                             updateNotification(getString(R.string.error_libvlc_not_ready))
                             stopCastingInternals()
-                            return
+                            return // Return from onEvent
                         }
 
                         val media = Media(libVLC, Uri.parse(hlsUrl))
@@ -445,22 +461,45 @@ class ScreenCastingService : Service() {
 
                         mediaPlayer?.setMedia(media)
                         media.release()
-                        mediaPlayer?.play()
+
+                        if (isPlaylistReadyForPlayback && mediaPlayer?.isPlaying == false) {
+                            Log.i(TAG, "Playlist was already ready. Starting playback immediately after renderer set.")
+                            mediaPlayer?.play()
+                        } else if (mediaPlayer?.hasMedia() == true && mediaPlayer?.renderer != null) {
+                            Log.i(TAG, "Renderer and Media set. Playback will be triggered by handleSegmentCompletion once playlist is ready.")
+                        } else {
+                            Log.w(TAG, "Media or Renderer not set after setting them, cannot initiate playback logic yet.")
+                        }
 
                         val rendererDisplayName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: getString(R.string.unknown_device_placeholder)
                         updateNotification(getString(R.string.casting_to_device, rendererDisplayName))
                         Log.i(TAG, "Playback of HLS stream initiated on renderer: $rendererDisplayName")
                         stopServiceDiscovery()
+                    } else {
+                        item.release() // This item is not our target, release it
+                        Log.d(TAG, "Service Discovery: Non-target renderer Added and released - ${item.displayName ?: item.name}")
                     }
                 }
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
-                    if (item.name == targetRendererName && item.type == targetRendererType) {
-                        Log.w(TAG, "Current target renderer '${targetRendererName}' was removed!")
+                    val deletedItem = item
+                    Log.d(TAG, "Service Discovery: Renderer Deleted - ${deletedItem.name} (Type: ${deletedItem.type})")
+                    if (currentRendererItem != null && currentRendererItem?.name == deletedItem.name && currentRendererItem?.type == deletedItem.type) {
+                        Log.w(TAG, "Service Discovery: Current target renderer ${deletedItem.name} was removed!")
                         updateNotification(getString(R.string.error_device_disconnected, targetRendererName ?: getString(R.string.unknown_device_placeholder)))
+                        // stopCastingInternals will handle releasing currentRendererItem
                         stopCastingInternals()
                     }
+                    // Release the item from the event, as we are done processing this event for this item.
+                    // If it was currentRendererItem, it will be released by stopCastingInternals.
+                    // If it was not currentRendererItem, we need to release this event's item.
+                    // This check prevents double release if it was the currentRendererItem.
+                    if (currentRendererItem != deletedItem) {
+                        deletedItem.release()
+                    }
                 }
-                else -> {}
+                else -> {
+                     item.release() // Release item from other unhandled events
+                }
             }
         }
     }
@@ -476,6 +515,7 @@ class ScreenCastingService : Service() {
 
     private fun stopCastingInternals() {
         Log.i(TAG, "Stopping casting internals...")
+        isPlaylistReadyForPlayback = false
         isCasting = false
 
         val wasEncoding = isEncoding
@@ -504,9 +544,10 @@ class ScreenCastingService : Service() {
             Log.i(TAG, "Deleted empty initial HLS playlist during stop.")
         }
 
+        Log.i(TAG, "Attempting to issue stop command to HLSServer.")
         hlsServer?.stop()
+        Log.i(TAG, "HLSServer stop command successfully issued from ScreenCastingService.")
         hlsServer = null
-        Log.d(TAG, "HLS server stopped.")
 
         mediaProjection?.unregisterCallback(mediaProjectionCallback)
         mediaProjection?.stop()
@@ -528,6 +569,7 @@ class ScreenCastingService : Service() {
         mediaPlayer = null
 
         currentRendererItem?.release()
+        Log.d(TAG, "Released currentRendererItem: ${currentRendererItem?.name}")
         currentRendererItem = null
         targetRendererName = null
         targetRendererType = null
@@ -608,15 +650,12 @@ class ScreenCastingService : Service() {
         private const val NOTIFICATION_ID = 1237
         private const val NOTIFICATION_CHANNEL_ID = "ScreenCastingChannel"
 
-        // Video parameters
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720
-        private const val VIDEO_BITRATE = 2 * 1024 * 1024 // 2 Mbps
+        private const val VIDEO_BITRATE = 2 * 1024 * 1024
         private const val VIDEO_FRAME_RATE = 30
-        // IFRAME_INTERVAL_SECONDS not directly used by MediaRecorder in this way.
 
-        // HLS parameters
         private const val MAX_SEGMENTS_IN_PLAYLIST = 5
-        private const val SEGMENT_DURATION_SECONDS = 2 // Int
+        private const val SEGMENT_DURATION_SECONDS = 2
     }
 }
