@@ -598,6 +598,6 @@ class ScreenCastingService : Service() {
         private const val CODEC_TIMEOUT_US = 10000L // Kept if any MediaCodec remnants, but likely unused now.
 
         private const val MAX_SEGMENTS_IN_PLAYLIST = 5
-        private const val SEGMENT_DURATION_SECONDS = 2 // Changed to Int
+        private const val SEGMENT_DURATION_SECONDS = 5
     }
 }
