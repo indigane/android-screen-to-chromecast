@@ -104,13 +104,13 @@ class ScreenCastingService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
     @Volatile private var isEncoding = false // Flag to control overall encoding process
-    private var hlsPlaylistFile: File? = null
-    private var tsSegmentIndex = 0 // Changed to Int
+    // private var hlsPlaylistFile: File? = null // REMOVED
+    private var tsSegmentIndex = 0 // Effectively unused for naming, kept for potential logging.
     private var screenDensity: Int = DisplayMetrics.DENSITY_DEFAULT
 
-    // Handler for timed segment rollover
-    private var segmentRolloverHandler: Handler? = null
-    private var segmentRolloverRunnable: Runnable? = null
+    // Handler for timed segment rollover - REMOVED
+    // private var segmentRolloverHandler: Handler? = null // REMOVED
+    // private var segmentRolloverRunnable: Runnable? = null // REMOVED
 
 
     override fun onCreate() {
@@ -129,7 +129,7 @@ class ScreenCastingService : Service() {
         mediaPlayer = MediaPlayer(libVLC)
         createNotificationChannel()
 
-        hlsFilesDir = File(cacheDir, "hls_stream")
+        hlsFilesDir = File(cacheDir, "hls_stream") // Still needed for live_stream.ts
         if (!hlsFilesDir!!.exists()) {
             if(!hlsFilesDir!!.mkdirs()){
                 Log.e(TAG, "Failed to create HLS directory: ${hlsFilesDir?.absolutePath}")
@@ -138,10 +138,10 @@ class ScreenCastingService : Service() {
                 return
             }
         }
-        hlsPlaylistFile = File(hlsFilesDir, "playlist.m3u8")
+        // hlsPlaylistFile = File(hlsFilesDir, "playlist.m3u8") // REMOVED
         screenDensity = resources.displayMetrics.densityDpi // Get screen density once
 
-        segmentRolloverHandler = Handler(Looper.getMainLooper()) // Initialize handler
+        // segmentRolloverHandler = Handler(Looper.getMainLooper()) // REMOVED
 
         Log.d(TAG, "ScreenCastingService created. HLS dir: ${hlsFilesDir?.absolutePath}, Density: $screenDensity")
     }
@@ -207,20 +207,18 @@ class ScreenCastingService : Service() {
                 }
 
                 isEncoding = true
-                tsSegmentIndex = 0 // Ensure tsSegmentIndex is 0 before the first call
-                hlsPlaylistFile?.delete()
-                // updateHlsPlaylist(finished = false) // Moved after startNewMediaRecorderSegment
+                tsSegmentIndex = 0 // This is not strictly used for naming anymore.
+                // hlsPlaylistFile?.delete() // REMOVED
 
-                if (!startNewMediaRecorderSegment()) {
-                    Log.e(TAG, "Failed to start initial MediaRecorder segment. Stopping service.")
-                    updateNotification("Error: Could not start screen recording for HLS.")
+                if (!startNewMediaRecorderSegment()) { // This will now start recording to LIVE_TS_FILENAME
+                    Log.e(TAG, "Failed to start MediaRecorder for single file. Stopping service.")
+                    updateNotification("Error: Could not start screen recording.") // Generic error
                     stopCastingInternals()
                     return START_NOT_STICKY
                 }
 
-                // If startNewMediaRecorderSegment was successful, tsSegmentIndex is now 1
-                updateHlsPlaylist(finished = false) // Now generates playlist with segment1.ts
-                startServiceDiscovery()
+                // updateHlsPlaylist(finished = false) // REMOVED - No playlist to update
+                startServiceDiscovery() // Service discovery still needed to find the Chromecast
             }
             ACTION_STOP_CASTING -> {
                 Log.d(TAG, "ACTION_STOP_CASTING received.")
@@ -248,9 +246,9 @@ class ScreenCastingService : Service() {
         virtualDisplay?.release()
         virtualDisplay = null
 
-        tsSegmentIndex++
-        val currentSegmentFile = File(hlsFilesDir, "segment$tsSegmentIndex.ts")
-        Log.i(TAG, "Starting new MediaRecorder segment: index=$tsSegmentIndex, file=${currentSegmentFile.absolutePath}")
+        // tsSegmentIndex++ // REMOVED - No longer incrementing for multiple segments
+        val currentSegmentFile = File(hlsFilesDir, LIVE_TS_FILENAME) // CHANGED to single filename
+        Log.i(TAG, "Starting MediaRecorder to output to single file: ${currentSegmentFile.absolutePath}")
 
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
@@ -263,19 +261,15 @@ class ScreenCastingService : Service() {
             mediaRecorder?.setVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT)
             mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
 
-            // setMaxDuration is still useful as a safety net, but not the primary rollover mechanism
-            mediaRecorder?.setMaxDuration(SEGMENT_DURATION_SECONDS * 1000 + 2000) // Increased buffer slightly for safety
+            // mediaRecorder?.setMaxDuration(...) // REMOVED - No max duration for single file mode
 
-            mediaRecorder?.setOnInfoListener { _, what, extra -> // mr parameter removed as it's not used
-                Log.i(TAG, "MediaRecorder OnInfo: what=$what, extra=$extra, currentSegmentIndex=$tsSegmentIndex")
-                // MAX_DURATION_REACHED is no longer the primary mechanism for rollover.
-                // It can be logged here if it still occurs, but handleSegmentCompletion() is now called by timer.
-                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    Log.w(TAG, "MediaRecorder unexpectedly hit MAX_DURATION_REACHED for segment $tsSegmentIndex. Rollover should be handled by timer. Extra: $extra")
-                }
+            mediaRecorder?.setOnInfoListener { _, what, extra ->
+                Log.i(TAG, "MediaRecorder OnInfo (single file mode): what=$what, extra=$extra")
+                // No MAX_DURATION_REACHED handling needed.
+                // Other info codes (like errors) could still be logged or handled if necessary.
             }
             mediaRecorder?.setOnErrorListener { _, what, extra ->
-                Log.e(TAG, "MediaRecorder error: what=$what, extra=$extra")
+                Log.e(TAG, "MediaRecorder error (single file mode): what=$what, extra=$extra")
                 updateNotification(getString(R.string.error_mediarecorder, what, extra))
                 stopCastingInternals()
             }
@@ -288,27 +282,16 @@ class ScreenCastingService : Service() {
                 ?: throw IOException("VirtualDisplay creation failed for MediaRecorder")
 
             mediaRecorder?.start()
-            Log.i(TAG, "MediaRecorder started for segment $tsSegmentIndex")
+            Log.i(TAG, "MediaRecorder started for file: ${currentSegmentFile.name}")
 
-            // Cancel any existing runnable
-            segmentRolloverRunnable?.let { segmentRolloverHandler?.removeCallbacks(it) }
+            // Timer scheduling REMOVED
+            // segmentRolloverRunnable?.let { segmentRolloverHandler?.removeCallbacks(it) }
+            // if (isEncoding) { ... }
 
-            if (isEncoding) { // Only schedule if we are actively encoding
-                segmentRolloverRunnable = Runnable {
-                    if (!isEncoding) { // Double check, state might have changed
-                        Log.d(TAG, "Segment rollover timer fired, but encoding has stopped. Ignoring.")
-                        return@Runnable
-                    }
-                    Log.d(TAG, "Timer fired for segment $tsSegmentIndex. Attempting manual rollover.")
-                    handleSegmentCompletion()
-                }
-                segmentRolloverHandler?.postDelayed(segmentRolloverRunnable!!, SEGMENT_DURATION_SECONDS * 1000L)
-                Log.d(TAG, "Scheduled manual rollover for segment $tsSegmentIndex in ${SEGMENT_DURATION_SECONDS}s")
-            }
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to prepare or start MediaRecorder for segment $tsSegmentIndex", e)
-            updateNotification(getString(R.string.error_mediarecorder_prepare_start, tsSegmentIndex))
+            Log.i(TAG, "Failed to prepare or start MediaRecorder for file: ${currentSegmentFile.name}", e) // Log updated
+            updateNotification(getString(R.string.error_mediarecorder_prepare_start, 0)) // tsSegmentIndex is 0 or irrelevant
             mediaRecorder?.release()
             mediaRecorder = null
             virtualDisplay?.release()
@@ -317,71 +300,71 @@ class ScreenCastingService : Service() {
         }
     }
 
-    private fun handleSegmentCompletion() {
-        Log.i(TAG, "Segment $tsSegmentIndex completion triggered. Current isEncoding: $isEncoding")
+    // private fun handleSegmentCompletion() { // REMOVED
+    //     Log.i(TAG, "Segment $tsSegmentIndex completion triggered. Current isEncoding: $isEncoding")
+    //
+    //     // The current MediaRecorder and its VirtualDisplay will be reset/released by startNewMediaRecorderSegment
+    //     // or by stopCastingInternals if isEncoding becomes false.
+    //     // We must call updateHlsPlaylist *before* startNewMediaRecorderSegment increments tsSegmentIndex
+    //     if (tsSegmentIndex > 0) {
+    //         updateHlsPlaylist()
+    //     }
+    //
+    //     if (isEncoding) {
+    //         if (!startNewMediaRecorderSegment()) {
+    //             Log.e(TAG, "Failed to start next MediaRecorder segment after completion of segment $tsSegmentIndex.")
+    //             stopCastingInternals()
+    //         }
+    //     } else {
+    //          Log.i(TAG, "isEncoding is false in handleSegmentCompletion, performing final playlist update.")
+    //          if (tsSegmentIndex > 0) updateHlsPlaylist(finished = true)
+    //     }
+    // }
 
-        // The current MediaRecorder and its VirtualDisplay will be reset/released by startNewMediaRecorderSegment
-        // or by stopCastingInternals if isEncoding becomes false.
-        // We must call updateHlsPlaylist *before* startNewMediaRecorderSegment increments tsSegmentIndex
-        if (tsSegmentIndex > 0) {
-            updateHlsPlaylist()
-        }
-
-        if (isEncoding) {
-            if (!startNewMediaRecorderSegment()) {
-                Log.e(TAG, "Failed to start next MediaRecorder segment after completion of segment $tsSegmentIndex.")
-                stopCastingInternals()
-            }
-        } else {
-             Log.i(TAG, "isEncoding is false in handleSegmentCompletion, performing final playlist update.")
-             if (tsSegmentIndex > 0) updateHlsPlaylist(finished = true)
-        }
-    }
-
-    private fun updateHlsPlaylist(finished: Boolean = false) {
-        if (hlsPlaylistFile == null || hlsFilesDir == null) {
-            Log.e(TAG, "Playlist file or HLS directory is null. Cannot update playlist.")
-            return
-        }
-        Log.i(TAG, "updateHlsPlaylist called. tsSegmentIndex: $tsSegmentIndex, finished: $finished")
-        try {
-            hlsPlaylistFile!!.bufferedWriter().use { writer ->
-                writer.write("#EXTM3U\n")
-                writer.write("#EXT-X-VERSION:3\n")
-                writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
-
-                val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
-                val firstSegmentInPlaylist = if (tsSegmentIndex == 0 && !finished) 0 else max(1, tsSegmentIndex - actualMaxSegments + 1)
-
-                writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
-
-                // tsSegmentIndex is 1 when the first segment *just started* due to the previous step's changes.
-                // The playlist is updated *after* startNewMediaRecorderSegment (which increments tsSegmentIndex).
-                // So, when updateHlsPlaylist is called for the very first time (not finished, just started):
-                // - tsSegmentIndex will be 1.
-                // - firstSegmentInPlaylist will be max(1, 1 - MAX_SEGMENTS_IN_PLAYLIST + 1), which is 1 if MAX_SEGMENTS_IN_PLAYLIST >=1
-                if (tsSegmentIndex == 1 && !finished) { // Special case for initial playlist when segment1.ts has just started
-                    writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
-                    writer.write("segment1.ts\n")
-                } else if (tsSegmentIndex > 0) { // For subsequent updates or when finishing
-                    // The loop should correctly handle listing up to MAX_SEGMENTS_IN_PLAYLIST segments
-                    // firstSegmentInPlaylist is already calculated to handle the sliding window.
-                    for (i in firstSegmentInPlaylist..tsSegmentIndex) {
-                        writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
-                        writer.write("segment$i.ts\n")
-                    }
-                }
-                // No segment entry if tsSegmentIndex is 0, which shouldn't happen if called after first segment start.
-
-                if (finished) {
-                    writer.write("#EXT-X-ENDLIST\n")
-                }
-            }
-            Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
-        } catch (e: IOException) {
-            Log.e(TAG, "Error writing HLS playlist", e)
-        }
-    }
+    // private fun updateHlsPlaylist(finished: Boolean = false) { // REMOVED
+    //     if (hlsPlaylistFile == null || hlsFilesDir == null) {
+    //         Log.e(TAG, "Playlist file or HLS directory is null. Cannot update playlist.")
+    //         return
+    //     }
+    //     Log.i(TAG, "updateHlsPlaylist called. tsSegmentIndex: $tsSegmentIndex, finished: $finished")
+    //     try {
+    //         hlsPlaylistFile!!.bufferedWriter().use { writer ->
+    //             writer.write("#EXTM3U\n")
+    //             writer.write("#EXT-X-VERSION:3\n")
+    //             writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
+    //
+    //             val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
+    //             val firstSegmentInPlaylist = if (tsSegmentIndex == 0 && !finished) 0 else max(1, tsSegmentIndex - actualMaxSegments + 1)
+    //
+    //             writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
+    //
+    //             // tsSegmentIndex is 1 when the first segment *just started* due to the previous step's changes.
+    //             // The playlist is updated *after* startNewMediaRecorderSegment (which increments tsSegmentIndex).
+    //             // So, when updateHlsPlaylist is called for the very first time (not finished, just started):
+    //             // - tsSegmentIndex will be 1.
+    //             // - firstSegmentInPlaylist will be max(1, 1 - MAX_SEGMENTS_IN_PLAYLIST + 1), which is 1 if MAX_SEGMENTS_IN_PLAYLIST >=1
+    //             if (tsSegmentIndex == 1 && !finished) { // Special case for initial playlist when segment1.ts has just started
+    //                 writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
+    //                 writer.write("segment1.ts\n")
+    //             } else if (tsSegmentIndex > 0) { // For subsequent updates or when finishing
+    //                 // The loop should correctly handle listing up to MAX_SEGMENTS_IN_PLAYLIST segments
+    //                 // firstSegmentInPlaylist is already calculated to handle the sliding window.
+    //                 for (i in firstSegmentInPlaylist..tsSegmentIndex) {
+    //                     writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
+    //                     writer.write("segment$i.ts\n")
+    //                 }
+    //             }
+    //             // No segment entry if tsSegmentIndex is 0, which shouldn't happen if called after first segment start.
+    //
+    //             if (finished) {
+    //                 writer.write("#EXT-X-ENDLIST\n")
+    //             }
+    //         }
+    //         Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
+    //     } catch (e: IOException) {
+    //         Log.e(TAG, "Error writing HLS playlist", e)
+    //     }
+    // }
 
     private fun startServiceDiscovery() {
         // ... (content of startServiceDiscovery - unchanged from previous state)
@@ -435,8 +418,9 @@ class ScreenCastingService : Service() {
                             stopCastingInternals()
                             return
                         }
-                        val hlsUrl = "http://$deviceIp:$hlsPort/${hlsPlaylistFile?.name}"
-                        Log.i(TAG, "HLS Stream URL for Chromecast: $hlsUrl")
+                        // val hlsUrl = "http://$deviceIp:$hlsPort/${hlsPlaylistFile?.name}" // REMOVED
+                        val streamUrl = "http://$deviceIp:$hlsPort/$LIVE_TS_FILENAME" // ADDED
+                        Log.i(TAG, "Single TS Stream URL for Chromecast: $streamUrl")
 
                         if (libVLC == null || mediaPlayer == null) {
                             Log.e(TAG, "LibVLC or MediaPlayer became null before playing.")
@@ -445,11 +429,11 @@ class ScreenCastingService : Service() {
                             return
                         }
 
-                        val media = Media(libVLC, Uri.parse(hlsUrl))
-                        media.addOption(":network-caching=1000")
-                        media.addOption(":hls-timeout=10")
-                        media.addOption(":demux=hls")
-
+                        val media = Media(libVLC, Uri.parse(streamUrl))
+                        media.addOption(":network-caching=1000") // Kept
+                        // media.addOption(":hls-timeout=10") // REMOVED
+                        media.addOption(":demux=ts") // ADDED to hint it's a TS stream
+                        // No other HLS options needed.
                         mediaPlayer?.setMedia(media)
                         media.release()
                         mediaPlayer?.play()
@@ -486,12 +470,12 @@ class ScreenCastingService : Service() {
         Log.i(TAG, "Stopping casting internals...")
         isCasting = false
 
-        // Cancel any pending segment rollover timer first
-        segmentRolloverRunnable?.let {
-            segmentRolloverHandler?.removeCallbacks(it)
-            Log.d(TAG, "Cancelled pending segment rollover timer in stopCastingInternals.")
-        }
-        segmentRolloverRunnable = null // Clear it
+        // Cancel any pending segment rollover timer first - REMOVED
+        // segmentRolloverRunnable?.let {
+        //     segmentRolloverHandler?.removeCallbacks(it)
+        //     Log.d(TAG, "Cancelled pending segment rollover timer in stopCastingInternals.")
+        // }
+        // segmentRolloverRunnable = null // Clear it
 
         val wasEncoding = isEncoding
         isEncoding = false
@@ -511,13 +495,13 @@ class ScreenCastingService : Service() {
         virtualDisplay?.release()
         virtualDisplay = null
 
-        if (wasEncoding && tsSegmentIndex > 0) {
-            updateHlsPlaylist(finished = true)
-            Log.i(TAG, "Final HLS playlist with ENDLIST written due to stopCastingInternals.")
-        } else if (hlsPlaylistFile?.exists() == true && tsSegmentIndex == 0) {
-            hlsPlaylistFile?.delete()
-            Log.i(TAG, "Deleted empty initial HLS playlist during stop.")
-        }
+        // if (wasEncoding && tsSegmentIndex > 0) { // REMOVED - No playlist to update
+        //     updateHlsPlaylist(finished = true)
+        //     Log.i(TAG, "Final HLS playlist with ENDLIST written due to stopCastingInternals.")
+        // } else if (hlsPlaylistFile?.exists() == true && tsSegmentIndex == 0) { // REMOVED
+        //     hlsPlaylistFile?.delete()
+        //     Log.i(TAG, "Deleted empty initial HLS playlist during stop.")
+        // }
 
         hlsServer?.stop()
         hlsServer = null
@@ -616,6 +600,7 @@ class ScreenCastingService : Service() {
 
     companion object {
         private const val TAG = "ScreenCastingSvc"
+        private const val LIVE_TS_FILENAME = "live_stream.ts" // ADDED
         const val ACTION_START_CASTING = "home.screen_to_chromecast.action.START_CASTING"
         const val ACTION_STOP_CASTING = "home.screen_to_chromecast.action.STOP_CASTING"
         const val EXTRA_RESULT_CODE = "home.screen_to_chromecast.extra.RESULT_CODE"
