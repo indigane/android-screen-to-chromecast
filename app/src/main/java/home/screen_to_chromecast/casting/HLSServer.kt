@@ -31,17 +31,25 @@ class HLSServer(port: Int, private val hlsFilesDir: File) : NanoHTTPD(port) {
 
         return try {
             val mimeType = when {
-                requestedPath.endsWith(".m3u8") -> "application/vnd.apple.mpegurl"
-                requestedPath.endsWith(".ts") -> "video/mp2t"
+                // Check for "live_stream.ts" first for clarity with single TS streaming
+                requestedPath == "live_stream.ts" -> "video/mp2t"
+                requestedPath.endsWith(".m3u8") -> "application/vnd.apple.mpegurl" // Keep for potential future use
+                requestedPath.endsWith(".ts") -> "video/mp2t" // Fallback for other .ts files if any
                 else -> {
                     Log.w(TAG, "Attempt to serve file with unrecognized extension: $requestedPath")
-                    "application/octet-stream" // Fallback, though ideally only .m3u8 and .ts are served
+                    "application/octet-stream"
                 }
             }
+
             val fis = FileInputStream(requestedFile)
-            // Use newChunkedResponse for potentially large .ts files if issues arise with newFixedLengthResponse
-            // For now, newFixedLengthResponse should be fine as segments are small.
-            newFixedLengthResponse(Response.Status.OK, mimeType, fis, requestedFile.length())
+
+            if (requestedPath == "live_stream.ts") {
+                Log.d(TAG, "Serving live_stream.ts with newChunkedResponse.")
+                newChunkedResponse(Response.Status.OK, mimeType, fis) // USE CHUNKED RESPONSE
+            } else {
+                Log.d(TAG, "Serving $requestedPath with newFixedLengthResponse.")
+                newFixedLengthResponse(Response.Status.OK, mimeType, fis, requestedFile.length()) // Existing logic for other files
+            }
         } catch (e: FileNotFoundException) {
             Log.e(TAG, "FileNotFoundException for: ${requestedFile.absolutePath}", e)
             newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found.")
