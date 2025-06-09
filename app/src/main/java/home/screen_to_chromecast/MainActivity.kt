@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
 
         val libVlcArgs = ArrayList<String>()
         libVlcArgs.add("--no-sub-autodetect-file")
+        libVlcArgs.add("-vvv") // Add this line for maximum verbosity
         try {
             libVLC = LibVLC(this, libVlcArgs)
         } catch (e: IllegalStateException) {

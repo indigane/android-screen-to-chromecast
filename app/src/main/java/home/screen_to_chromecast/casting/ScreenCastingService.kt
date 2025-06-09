@@ -118,6 +118,7 @@ class ScreenCastingService : Service() {
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val libVlcArgs = ArrayList<String>()
         libVlcArgs.add("--no-sub-autodetect-file")
+        libVlcArgs.add("-vvv") // Add this line for maximum verbosity
 
         try {
             libVLC = LibVLC(this, libVlcArgs)
