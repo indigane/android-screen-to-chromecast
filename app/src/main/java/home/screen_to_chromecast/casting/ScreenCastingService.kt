@@ -112,6 +112,9 @@ class ScreenCastingService : Service() {
     // private var segmentRolloverHandler: Handler? = null // REMOVED
     // private var segmentRolloverRunnable: Runnable? = null // REMOVED
 
+    private val serviceHandler = Handler(Looper.getMainLooper())
+    private var playbackRunnable: Runnable? = null
+
 
     override fun onCreate() {
         super.onCreate()
@@ -409,40 +412,58 @@ class ScreenCastingService : Service() {
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemAdded -> {
                     if (item.name == targetRendererName && item.type == targetRendererType) {
                         Log.i(TAG, "Target renderer '${targetRendererName}' found by service discoverer!")
-                        currentRendererItem = item
-                        mediaPlayer?.setRenderer(currentRendererItem)
+                        currentRendererItem = item // Keep a reference to the item
+                        mediaPlayer?.setRenderer(currentRendererItem) // Set the renderer on MediaPlayer immediately
 
-                        val deviceIp = getDeviceIpAddress()
-                        if (deviceIp == null) {
-                            Log.e(TAG, "Could not get device IP address. Cannot start HLS playback.")
-                            updateNotification(getString(R.string.error_network_config))
-                            stopCastingInternals()
-                            return
+                        // Cancel any previously scheduled playback runnable
+                        playbackRunnable?.let { serviceHandler.removeCallbacks(it) }
+
+                        playbackRunnable = Runnable {
+                            if (!isCasting || currentRendererItem == null || currentRendererItem?.name != targetRendererName) {
+                                Log.w(TAG, "Playback runnable executed, but casting stopped, renderer lost, or target changed. Aborting playback start.")
+                                return@Runnable
+                            }
+
+                            val deviceIp = getDeviceIpAddress()
+                            if (deviceIp == null) {
+                                Log.e(TAG, "Could not get device IP address for delayed playback. Cannot start playback.")
+                                updateNotification(getString(R.string.error_network_config))
+                                stopCastingInternals() // Stop if network is an issue
+                                return@Runnable
+                            }
+                            val streamUrl = "http://$deviceIp:$hlsPort/$LIVE_TS_FILENAME"
+                            Log.i(TAG, "Delayed: Single TS Stream URL for Chromecast: $streamUrl")
+
+                            if (libVLC == null || mediaPlayer == null || mediaPlayer?.isReleased == true) {
+                                Log.e(TAG, "Delayed: LibVLC or MediaPlayer became null/released before playing.")
+                                updateNotification(getString(R.string.error_libvlc_not_ready))
+                                // Don't call stopCastingInternals here, let other mechanisms handle it.
+                                return@Runnable
+                            }
+
+                            // Ensure media player is still associated with the correct renderer
+                            if(mediaPlayer?.renderer != currentRendererItem){
+                                 Log.w(TAG, "MediaPlayer renderer changed before delayed playback. Attempting to set it again.")
+                                 mediaPlayer?.setRenderer(currentRendererItem)
+                            }
+
+                            val media = Media(libVLC, Uri.parse(streamUrl))
+                            media.addOption(":network-caching=1000")
+                            media.addOption(":demux=ts")
+
+                            mediaPlayer?.setMedia(media)
+                            media.release()
+                            mediaPlayer?.play()
+
+                            val rendererDisplayName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: getString(R.string.unknown_device_placeholder)
+                            updateNotification(getString(R.string.casting_to_device, rendererDisplayName))
+                            Log.i(TAG, "Delayed: Playback of TS stream initiated on renderer: $rendererDisplayName")
                         }
-                        // val hlsUrl = "http://$deviceIp:$hlsPort/${hlsPlaylistFile?.name}" // REMOVED
-                        val streamUrl = "http://$deviceIp:$hlsPort/$LIVE_TS_FILENAME" // ADDED
-                        Log.i(TAG, "Single TS Stream URL for Chromecast: $streamUrl")
 
-                        if (libVLC == null || mediaPlayer == null) {
-                            Log.e(TAG, "LibVLC or MediaPlayer became null before playing.")
-                            updateNotification(getString(R.string.error_libvlc_not_ready))
-                            stopCastingInternals()
-                            return
-                        }
+                        Log.d(TAG, "Scheduling playback for '${targetRendererName}' in ${INITIAL_PLAYBACK_DELAY_MS}ms.")
+                        serviceHandler.postDelayed(playbackRunnable!!, INITIAL_PLAYBACK_DELAY_MS)
 
-                        val media = Media(libVLC, Uri.parse(streamUrl))
-                        media.addOption(":network-caching=1000") // Kept
-                        // media.addOption(":hls-timeout=10") // REMOVED
-                        media.addOption(":demux=ts") // ADDED to hint it's a TS stream
-                        // No other HLS options needed.
-                        mediaPlayer?.setMedia(media)
-                        media.release()
-                        mediaPlayer?.play()
-
-                        val rendererDisplayName = currentRendererItem?.displayName ?: currentRendererItem?.name ?: getString(R.string.unknown_device_placeholder)
-                        updateNotification(getString(R.string.casting_to_device, rendererDisplayName))
-                        Log.i(TAG, "Playback of HLS stream initiated on renderer: $rendererDisplayName")
-                        stopServiceDiscovery()
+                        stopServiceDiscovery() // Stop looking for other renderers
                     }
                 }
                 org.videolan.libvlc.RendererDiscoverer.Event.ItemDeleted -> {
@@ -470,6 +491,13 @@ class ScreenCastingService : Service() {
     private fun stopCastingInternals() {
         Log.i(TAG, "Stopping casting internals...")
         isCasting = false
+
+        // Cancel pending playback runnable
+        playbackRunnable?.let {
+            serviceHandler.removeCallbacks(it)
+            Log.d(TAG, "Cancelled pending playback runnable.")
+        }
+        playbackRunnable = null // Clear it
 
         // Cancel any pending segment rollover timer first - REMOVED
         // segmentRolloverRunnable?.let {
@@ -601,7 +629,8 @@ class ScreenCastingService : Service() {
 
     companion object {
         private const val TAG = "ScreenCastingSvc"
-        private const val LIVE_TS_FILENAME = "live_stream.ts" // ADDED
+        private const val LIVE_TS_FILENAME = "live_stream.ts"
+        private const val INITIAL_PLAYBACK_DELAY_MS = 3000L // 3 seconds
         const val ACTION_START_CASTING = "home.screen_to_chromecast.action.START_CASTING"
         const val ACTION_STOP_CASTING = "home.screen_to_chromecast.action.STOP_CASTING"
         const val EXTRA_RESULT_CODE = "home.screen_to_chromecast.extra.RESULT_CODE"
