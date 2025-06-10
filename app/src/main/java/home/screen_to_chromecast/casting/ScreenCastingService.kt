@@ -333,14 +333,18 @@ class ScreenCastingService : Service() {
     //     Log.i(TAG, "updateHlsPlaylist called. tsSegmentIndex: $tsSegmentIndex, finished: $finished")
     //     try {
     //         hlsPlaylistFile!!.bufferedWriter().use { writer ->
-    //             writer.write("#EXTM3U\n")
-    //             writer.write("#EXT-X-VERSION:3\n")
-    //             writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}\n")
+    //             writer.write("#EXTM3U
+")
+    //             writer.write("#EXT-X-VERSION:3
+")
+    //             writer.write("#EXT-X-TARGETDURATION:${SEGMENT_DURATION_SECONDS + 1}
+")
     //
     //             val actualMaxSegments = if (MAX_SEGMENTS_IN_PLAYLIST <= 0) 1 else MAX_SEGMENTS_IN_PLAYLIST
     //             val firstSegmentInPlaylist = if (tsSegmentIndex == 0 && !finished) 0 else max(1, tsSegmentIndex - actualMaxSegments + 1)
     //
-    //             writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist\n")
+    //             writer.write("#EXT-X-MEDIA-SEQUENCE:$firstSegmentInPlaylist
+")
     //
     //             // tsSegmentIndex is 1 when the first segment *just started* due to the previous step's changes.
     //             // The playlist is updated *after* startNewMediaRecorderSegment (which increments tsSegmentIndex).
@@ -348,20 +352,25 @@ class ScreenCastingService : Service() {
     //             // - tsSegmentIndex will be 1.
     //             // - firstSegmentInPlaylist will be max(1, 1 - MAX_SEGMENTS_IN_PLAYLIST + 1), which is 1 if MAX_SEGMENTS_IN_PLAYLIST >=1
     //             if (tsSegmentIndex == 1 && !finished) { // Special case for initial playlist when segment1.ts has just started
-    //                 writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
-    //                 writer.write("segment1.ts\n")
+    //                 writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},
+")
+    //                 writer.write("segment1.ts
+")
     //             } else if (tsSegmentIndex > 0) { // For subsequent updates or when finishing
     //                 // The loop should correctly handle listing up to MAX_SEGMENTS_IN_PLAYLIST segments
     //                 // firstSegmentInPlaylist is already calculated to handle the sliding window.
     //                 for (i in firstSegmentInPlaylist..tsSegmentIndex) {
-    //                     writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},\n")
-    //                     writer.write("segment$i.ts\n")
+    //                     writer.write("#EXTINF:${String.format("%.3f", SEGMENT_DURATION_SECONDS.toDouble())},
+")
+    //                     writer.write("segment$i.ts
+")
     //                 }
     //             }
     //             // No segment entry if tsSegmentIndex is 0, which shouldn't happen if called after first segment start.
     //
     //             if (finished) {
-    //                 writer.write("#EXT-X-ENDLIST\n")
+    //                 writer.write("#EXT-X-ENDLIST
+")
     //             }
     //         }
     //         Log.i(TAG, "Playlist file ${hlsPlaylistFile?.name} written successfully. tsSegmentIndex: $tsSegmentIndex. Finished: $finished.")
@@ -629,7 +638,7 @@ class ScreenCastingService : Service() {
 
     companion object {
         private const val TAG = "ScreenCastingSvc"
-        private const val LIVE_TS_FILENAME = "live_stream.ts"
+        private const val LIVE_TS_FILENAME = "live_stream.ts" // Ensure this is defined
         private const val INITIAL_PLAYBACK_DELAY_MS = 3000L // 3 seconds
         const val ACTION_START_CASTING = "home.screen_to_chromecast.action.START_CASTING"
         const val ACTION_STOP_CASTING = "home.screen_to_chromecast.action.STOP_CASTING"
@@ -639,17 +648,20 @@ class ScreenCastingService : Service() {
         private const val NOTIFICATION_ID = 1237
         private const val NOTIFICATION_CHANNEL_ID = "ScreenCastingChannel"
 
+        // Using lowered settings from previous diagnostic step
         private const val VIDEO_WIDTH = 640
         private const val VIDEO_HEIGHT = 360
         private const val VIDEO_BITRATE = 500 * 1024
         private const val VIDEO_FRAME_RATE = 15
-        // IFRAME_INTERVAL_SECONDS is less critical for MediaRecorder as it handles keyframes internally for TS.
-        // But can be kept if any other logic might use it, or removed if purely for MediaCodec.
-        // For MediaRecorder, setMaxDuration and setMaxFileSize are the primary controls for segmentation.
-        // private const val IFRAME_INTERVAL_SECONDS = 2
-        private const val CODEC_TIMEOUT_US = 10000L // Kept if any MediaCodec remnants, but likely unused now.
 
-        private const val MAX_SEGMENTS_IN_PLAYLIST = 5
-        private const val SEGMENT_DURATION_SECONDS = 5
+        // private const val IFRAME_INTERVAL_SECONDS = 2 // Unused
+        // private const val CODEC_TIMEOUT_US = 10000L // Unused
+
+        // HLS specific constants - no longer strictly needed for multi-segment HLS
+        // but SEGMENT_DURATION_SECONDS is used by the timer logic (now removed for single file)
+        // and MAX_SEGMENTS_IN_PLAYLIST is unused.
+        // For single file, these are not relevant in the same way.
+        // private const val MAX_SEGMENTS_IN_PLAYLIST = 5
+        private const val SEGMENT_DURATION_SECONDS = 5 // This was for the timer, now removed.
     }
 }
