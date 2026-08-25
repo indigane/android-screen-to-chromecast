@@ -22,6 +22,8 @@ Chromecast using only the Android framework, with nothing from Google on the dev
   "enter IP" escape hatch for networks where multicast is blocked.
 - Adjustable resolution (720p / 1080p), frame rate, bitrate, and codec.
 - Aspect-preserving letterboxing that follows device rotation smoothly.
+- **Internal audio** — streams other apps' media and game audio to the TV, with **no privileged
+  permission** (works on GrapheneOS). Uses playback capture off the same screen-capture consent.
 - A Quick Settings tile.
 - A built-in **Probe** button that runs the full control handshake against a receiver and reports
   the result — handy for diagnosing a device that will not connect.
@@ -34,8 +36,10 @@ Chromecast using only the Android framework, with nothing from Google on the dev
 
 - **H.264 only.** VP8 is present in the protocol layer but not supported end-to-end; the default
   receiver profile is H.264.
-- **No audio yet.** Capturing system audio requires a privileged permission that ordinary apps
-  cannot hold, so mirroring is video-only for now.
+- **Audio is media/game only.** Internal audio uses Android's playback capture, which by design
+  cannot capture calls or DRM-protected apps, and any app may opt out of being captured — those
+  sources stay silent. It needs the **microphone** runtime permission (the platform gates playback
+  capture behind it); if you deny it, mirroring is video-only. No physical microphone is used.
 - Resolution is fixed for the duration of a session (a Cast protocol constraint); rotation is
   handled by letterboxing rather than re-negotiating.
 - First-generation Chromecast (2013) may need legacy TLS ciphers that the UI does not yet expose.
@@ -123,6 +127,8 @@ On first launch the app asks for:
 - **Notifications** — the ongoing notification carries the **Stop** action. If you deny it, the app
   still works; the notification is just hidden.
 - **Screen capture** — requested through the system dialog each time you start mirroring.
+- **Microphone** (`RECORD_AUDIO`) — required by the platform to capture internal audio via playback
+  capture (no physical mic is used). Deny it and mirroring is video-only.
 
 The install-time network permissions (`INTERNET`, Wi-Fi state, multicast, wake lock) are not
 prompted for.
@@ -147,7 +153,7 @@ prompted for.
 | **Bitrate** | Ceiling in kbps. The encoder is CBR but backs off automatically under packet loss. |
 | **Video codec** | H.264 (recommended). VP8 is exposed but not fully supported. |
 | **Receiver app** | Which receiver id / protocol dialect to launch. The default ladder tries Google's mirroring receiver, then Chrome's. |
-| **Mirror system audio** | Disabled — not possible without a privileged permission. |
+| **Mirror internal audio** | On by default. Streams other apps' media/game audio (AAC to Google's receiver, Opus to Chrome's). Needs the microphone permission; calls, DRM apps and opt-out apps stay silent. |
 | **Verbose diagnostics** | Off by default. On, it logs a detailed per-second stats line plus RTCP/keyframe/retransmit events, for diagnosing quality problems. |
 
 All settings and the selected device are remembered between launches.

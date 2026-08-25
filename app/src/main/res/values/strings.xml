@@ -50,8 +50,9 @@
     <string name="setting_bitrate">Bitrate (kbps)</string>
     <string name="setting_codec">Video codec</string>
     <string name="setting_app_id">Receiver app</string>
-    <string name="setting_audio">Mirror system audio</string>
-    <string name="setting_audio_explanation">System audio capture needs a privileged permission that no ordinary app can hold, so mirroring is video only.</string>
+    <string name="setting_audio">Mirror internal audio</string>
+    <string name="setting_audio_explanation">Streams other apps\' media and game audio to the TV. Calls and DRM-protected apps (and apps that opt out) stay silent. Needs the microphone permission; if denied, mirroring is video only.</string>
+    <string name="toast_aac_adts">AAC ADTS framing: %1$s</string>
     <string name="setting_verbose">Verbose diagnostics</string>
     <string name="setting_verbose_explanation">Logs a detailed per-second STATS line and RTCP/keyframe/retransmit events. Leave on for a capture; turn off to reduce the log.</string>
 

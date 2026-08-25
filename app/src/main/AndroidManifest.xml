@@ -33,8 +33,19 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
+    <!--
+      Internal audio capture via AudioPlaybackCaptureConfiguration (no privileged permission). The
+      microphone FGS type is required from Android 14 for a foreground service that records audio,
+      even when the source is playback capture rather than the mic.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <!-- Android 13+. Without it the ongoing notification, and therefore the Stop action, is hidden. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- RECORD_AUDIO implies the microphone feature, but playback capture needs no physical mic. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -58,7 +69,7 @@
         <service
             android:name="app.castmirror.service.MirrorService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection|microphone" />
 
         <service
             android:name="app.castmirror.service.MirrorTileService"

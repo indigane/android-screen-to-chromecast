@@ -40,8 +40,8 @@ OUT="$ROOT/out"
 PACKAGE_NAME="app.castmirror"
 MIN_SDK=26
 TARGET_SDK=34
-VERSION_CODE=5
-VERSION_NAME="0.2.0"
+VERSION_CODE=6
+VERSION_NAME="0.3.0"
 
 QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1

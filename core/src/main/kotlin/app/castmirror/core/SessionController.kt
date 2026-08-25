@@ -626,6 +626,12 @@ class SessionController(
                 val frame = try {
                     source.nextFrame(100, expectedFrameId)
                 } catch (e: Throwable) {
+                    // A video source failure is fatal — video is the session. An AUDIO source
+                    // failure is not: Tier A capture (AudioPlaybackCapture) can fail at any moment
+                    // (no route, a format the encoder rejects, the app opting out of capture), and
+                    // that must never tear down the video the user is watching. End just this pump;
+                    // the audio Sender then sits idle (harmless), video keeps flowing.
+                    if (stream.isAudio) { runCatching { source.close() }; return }
                     stop(e); return
                 } ?: continue
                 // A source that ignores the requested id would break the sender's contiguity check;

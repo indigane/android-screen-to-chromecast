@@ -3,6 +3,7 @@ package app.castmirror.service
 import app.castmirror.core.cast.streaming.SenderStats
 import app.castmirror.core.cast.streaming.rtcp.ReceiverReportBlock
 import app.castmirror.core.cast.streaming.rtcp.RtcpFeedback
+import app.castmirror.encode.AudioEncodeSnapshot
 import app.castmirror.encode.EncodeSnapshot
 import app.castmirror.util.AppLog
 
@@ -29,6 +30,13 @@ import app.castmirror.util.AppLog
 class SessionDiagnostics(private val verbose: Boolean) {
 
     private var lastReceiverReport: ReceiverReportBlock? = null
+    private var lastAudioReceiverReport: ReceiverReportBlock? = null
+
+    /** SSRC of the audio stream, when audio is active; shown in the audio diagnostics line. */
+    var audioSsrc: Long? = null
+
+    private var prevAudioFrames = 0L
+    private var prevAudioBytes = 0L
 
     private var nackPacketsThisSec = 0
     private var retransmitPacketsThisSec = 0
@@ -39,6 +47,7 @@ class SessionDiagnostics(private val verbose: Boolean) {
     private var lastRetransmitLogMs = 0L
     private var lastReceiverReportLogMs = 0L
     private var lastTerseLogMs = 0L
+    private var lastAudioTerseLogMs = 0L
 
     private var prevFramesEmitted = 0L
     private var prevBytesEmitted = 0L
@@ -47,11 +56,19 @@ class SessionDiagnostics(private val verbose: Boolean) {
     /**
      * Records one inbound RTCP compound. Runs on the core's receive thread.
      *
+     * Audio feedback contributes only its receiver report (for the audio loss figure); the
+     * detailed NACK/PLI/retransmit logging is kept to the video stream to avoid doubling the log.
+     *
+     * @param isAudio whether the datagram was routed to the audio sender.
      * @param fb the parsed feedback the [Sender][app.castmirror.core.cast.streaming.Sender] just
      *   applied.
      */
     @Synchronized
-    fun onFeedback(fb: RtcpFeedback) {
+    fun onFeedback(isAudio: Boolean, fb: RtcpFeedback) {
+        if (isAudio) {
+            fb.receiverReport?.let { lastAudioReceiverReport = it }
+            return
+        }
         val now = nowMs()
 
         fb.receiverReport?.let { report ->
@@ -115,6 +132,8 @@ class SessionDiagnostics(private val verbose: Boolean) {
         encode: EncodeSnapshot,
         elapsedMs: Long,
         targetBitrateBps: Int?,
+        audioStats: SenderStats? = null,
+        audioEncode: AudioEncodeSnapshot? = null,
     ): String {
         val seconds = (elapsedMs.coerceAtLeast(1)).toDouble() / 1000.0
         val fps = ((encode.framesEmitted - prevFramesEmitted) / seconds).toInt().coerceAtLeast(0)
@@ -162,11 +181,45 @@ class SessionDiagnostics(private val verbose: Boolean) {
             }
         }
 
+        logAudioTick(audioStats, audioEncode, seconds)
+
         nackPacketsThisSec = 0
         retransmitPacketsThisSec = 0
         pliThisSec = 0
         nackFrameIds.clear()
         return uiLine
+    }
+
+    /**
+     * Logs one audio line per stats tick when audio is active.
+     *
+     * Shows the audio encode rate and — from the audio stream's own receiver report — whether the
+     * receiver is acking audio (checkpoint advancing, fraction lost), so a capture reveals whether
+     * audio packets are getting through independently of video.
+     */
+    private fun logAudioTick(audioStats: SenderStats?, audioEncode: AudioEncodeSnapshot?, seconds: Double) {
+        if (audioStats == null || audioEncode == null) return
+        val aFps = ((audioEncode.framesEmitted - prevAudioFrames) / seconds).toInt().coerceAtLeast(0)
+        val aKbps = (((audioEncode.bytesEmitted - prevAudioBytes) * 8).toDouble() / seconds / 1000.0).toInt()
+        prevAudioFrames = audioEncode.framesEmitted
+        prevAudioBytes = audioEncode.bytesEmitted
+        val rr = lastAudioReceiverReport
+        val lossPercent = rr?.let { it.fractionLostNumerator * 100 / 256 }
+
+        if (verbose) {
+            AppLog.i(
+                "AUDIO fps=$aFps encKbps=$aKbps ssrc=${audioSsrc ?: "-"} | " +
+                    "sent=${audioStats.framesEnqueued} cp=${audioStats.checkpointFrameId}/${audioStats.lastEnqueuedFrameId} " +
+                    "rtt=${audioStats.roundTripTimeMs}ms | " +
+                    "loss=${rr?.let { "${it.fractionLostNumerator}/256~${lossPercent}%" } ?: "n/a"}"
+            )
+        } else {
+            val now = nowMs()
+            if (now - lastAudioTerseLogMs >= TERSE_LOG_INTERVAL_MS) {
+                lastAudioTerseLogMs = now
+                AppLog.i("audio: $aFps fps, $aKbps kbps" + (lossPercent?.let { ", loss ~$it%" } ?: ""))
+            }
+        }
     }
 
     private fun nowMs(): Long = System.nanoTime() / 1_000_000L

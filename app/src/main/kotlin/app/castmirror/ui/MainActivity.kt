@@ -102,6 +102,7 @@ class MainActivity : Activity() {
     private var suppressCheckListener = false
     private var boundService: MirrorService? = null
     private var startAfterPermission = false
+    private var askedRecordAudio = false
     private var probeInFlight = false
 
     private val logListener = AppLog.Listener { runOnUiThread { renderLog() } }
@@ -268,11 +269,20 @@ class MainActivity : Activity() {
         content.addView(
             CheckBox(this).apply {
                 text = getString(R.string.setting_audio)
-                isChecked = false
-                isEnabled = false
+                isChecked = settings.mirrorAudio
+                setOnCheckedChangeListener { _, checked -> settings.mirrorAudio = checked }
             }
         )
-        content.addView(caption(getString(R.string.setting_audio_explanation)))
+        content.addView(
+            caption(getString(R.string.setting_audio_explanation)).apply {
+                // Hidden device-test control: long-press toggles ADTS vs raw-AU AAC framing.
+                setOnLongClickListener {
+                    settings.aacAdts = !settings.aacAdts
+                    toast(getString(R.string.toast_aac_adts, if (settings.aacAdts) "ON" else "OFF (raw AU)"))
+                    true
+                }
+            }
+        )
         content.addView(
             CheckBox(this).apply {
                 text = getString(R.string.setting_verbose)
@@ -377,6 +387,17 @@ class MainActivity : Activity() {
             return
         }
 
+        // Ask for RECORD_AUDIO alongside the capture consent when internal audio is on. If the user
+        // declines, the session still starts and mirrors video only. Asked at most once per attempt.
+        if (settings.mirrorAudio && !askedRecordAudio &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askedRecordAudio = true
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
+            return
+        }
+
+        askedRecordAudio = false
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         AppLog.i("ui: requesting screen-capture consent for ${device.friendlyName}")
         startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_PROJECTION)
@@ -450,12 +471,21 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != REQUEST_NOTIFICATIONS) return
         val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
-        if (!granted) AppLog.w("ui: notification permission denied; the session can still run but has no Stop button")
-        if (startAfterPermission) {
-            startAfterPermission = false
-            beginSession()
+        when (requestCode) {
+            REQUEST_NOTIFICATIONS -> {
+                if (!granted) AppLog.w("ui: notification permission denied; the session can still run but has no Stop button")
+                if (startAfterPermission) {
+                    startAfterPermission = false
+                    beginSession()
+                }
+            }
+            REQUEST_RECORD_AUDIO -> {
+                // Proceed either way: audio granted → captured; denied → video-only (the service
+                // re-checks the permission and logs the outcome).
+                if (!granted) AppLog.w("ui: RECORD_AUDIO denied; mirroring will be video only")
+                beginSession()
+            }
         }
     }
 
@@ -714,6 +744,7 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_PROJECTION = 1001
         const val REQUEST_NOTIFICATIONS = 1002
+        const val REQUEST_RECORD_AUDIO = 1003
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 

@@ -149,6 +149,31 @@ class MirrorSettings(context: Context) {
         set(v) = prefs.edit().putBoolean(KEY_VERBOSE_DIAGNOSTICS, v).apply()
 
     /**
+     * Whether to also capture and stream internal (other apps') audio.
+     *
+     * Default **on**. Uses `AudioPlaybackCaptureConfiguration` off the same `MediaProjection` as
+     * the video, so it needs no privileged permission — only the runtime `RECORD_AUDIO` grant. It
+     * captures media/game/unknown-usage audio; calls, DRM-protected apps and apps that opt out of
+     * playback capture are silent by policy. If `RECORD_AUDIO` is not granted the session mirrors
+     * video only.
+     */
+    var mirrorAudio: Boolean
+        get() = prefs.getBoolean(KEY_MIRROR_AUDIO, true)
+        set(v) = prefs.edit().putBoolean(KEY_MIRROR_AUDIO, v).apply()
+
+    /**
+     * Whether the AAC encoder output is wrapped in ADTS framing before being sent.
+     *
+     * Default **on**, which is what Google's Cast receiver expects for the `aac` codec. This is the
+     * one-flip fallback for the "audio plays silent" case: turning it **off** sends raw AAC access
+     * units instead. There is no visible control for it — long-press the audio caption on the main
+     * screen to toggle it for a device test.
+     */
+    var aacAdts: Boolean
+        get() = prefs.getBoolean(KEY_AAC_ADTS, true)
+        set(v) = prefs.edit().putBoolean(KEY_AAC_ADTS, v).apply()
+
+    /**
      * Seconds between forced key frames.
      *
      * A deliberate divergence from GMS's 60 s: see [KEY_FRAME_INTERVAL_SECONDS].
@@ -171,6 +196,11 @@ class MirrorSettings(context: Context) {
         private const val KEY_APP_ID_MODE = "app_id_mode"
         private const val KEY_MANUAL_HOST = "manual_host"
         private const val KEY_VERBOSE_DIAGNOSTICS = "verbose_diagnostics"
+        private const val KEY_MIRROR_AUDIO = "mirror_audio"
+        private const val KEY_AAC_ADTS = "aac_adts"
+
+        /** Audio bitrate in bits per second for the AAC / Opus encoder. */
+        const val AUDIO_BITRATE_BPS = 128_000
 
         /** GMS's ceiling for system mirroring. */
         const val DEFAULT_BITRATE_KBPS = 6_000

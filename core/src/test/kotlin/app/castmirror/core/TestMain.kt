@@ -23,6 +23,7 @@ fun main() {
     runBitrateSuggestorTests()
     runMdnsTests()
     runEndToEndTest()
+    runAudioVideoTest()
     runFieldSevenCorrelationTest()
 
     exitProcess(T.summary())

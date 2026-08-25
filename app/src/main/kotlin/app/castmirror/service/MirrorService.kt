@@ -1,8 +1,10 @@
 package app.castmirror.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.pm.PackageManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -41,6 +43,8 @@ import app.castmirror.core.cast.streaming.SenderObserver
 import app.castmirror.core.cast.streaming.messages.Answer
 import app.castmirror.core.cast.streaming.messages.Resolution
 import app.castmirror.core.cast.streaming.BitrateSuggestor
+import app.castmirror.capture.AudioPlaybackCapture
+import app.castmirror.encode.AudioEncoderFrameSource
 import app.castmirror.encode.EncodeSnapshot
 import app.castmirror.encode.KeyFrameReason
 import app.castmirror.encode.VideoEncoderFrameSource
@@ -120,6 +124,7 @@ class MirrorService : Service() {
     private var compositor: LetterboxCompositor? = null
     private var controller: SessionController? = null
     private var encoder: VideoEncoderFrameSource? = null
+    private var audioSource: AudioEncoderFrameSource? = null
     private var suggestor: BitrateSuggestor? = null
     private var diagnostics: SessionDiagnostics? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -262,8 +267,11 @@ class MirrorService : Service() {
         publish(MirrorStatus(true, deviceName, null, getString(R.string.status_starting), deviceKey = key))
 
         // Order matters: the foreground service must exist, with the mediaProjection type, before
-        // getMediaProjection is called. Android 14 throws SecurityException otherwise.
-        enterForeground(getString(R.string.status_preparing))
+        // getMediaProjection is called. Android 14 throws SecurityException otherwise. The
+        // microphone type is added only when internal audio will really be captured.
+        val useMic = settings.mirrorAudio &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        enterForeground(getString(R.string.status_preparing), useMic)
 
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val mp = try {
@@ -325,9 +333,19 @@ class MirrorService : Service() {
             )
         }
 
+        // Decide the audio offer. The audio codec must match the dialect of the first ladder rung:
+        // the GMS receiver takes AAC, the openscreen receiver takes Opus. If audio is off, the
+        // permission is missing, or an Opus encoder is unavailable, the OFFER carries no audio
+        // stream and the session mirrors video only — audio never fails the session.
+        val audioProfile = ladder.first().profile
+        val audioCodecName = audioProfile.audioCodec
+        val audioCodecs: List<String>? = resolveAudioOffer(audioCodecName)
+
         val config = SessionConfig(
             launchLadder = ladder,
             videoCodecs = listOf(codec.offerName),
+            audioCodecs = audioCodecs,
+            audioBitRate = MirrorSettings.AUDIO_BITRATE_BPS,
             resolutions = listOf(offeredResolution),
             maxFrameRate = settings.frameRate.toString(),
             maxBitRate = settings.bitrateBps,
@@ -401,14 +419,33 @@ class MirrorService : Service() {
      * from [NegotiatedStream.effectiveResolution] — the receiver's panel can be smaller than what
      * was offered, and encoding larger than it wastes bitrate the receiver will only downscale.
      */
-    private fun createFrameSource(stream: NegotiatedStream): FrameSource {
-        if (stream.isAudio) {
-            // Audio is never offered: system audio capture needs CAPTURE_AUDIO_OUTPUT or
-            // MODIFY_AUDIO_ROUTING, both signature|privileged. A source that yields nothing keeps
-            // the core's per-stream invariants intact if an audio stream ever appears.
-            AppLog.w("session: an audio stream was negotiated but this app cannot capture system audio")
-            return SilentFrameSource
+    /**
+     * Decides whether to offer an audio stream, and logs the outcome.
+     *
+     * @param codecName the audio codec for the chosen dialect (`aac` or `opus`).
+     * @return the single-codec list to put in the OFFER, or `null` for video-only.
+     */
+    private fun resolveAudioOffer(codecName: String): List<String>? {
+        if (!settings.mirrorAudio) {
+            AppLog.i("audio: off")
+            return null
         }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            AppLog.w("audio: RECORD_AUDIO denied → video only")
+            return null
+        }
+        val mime = runCatching { AudioEncoderFrameSource.mimeFor(codecName) }.getOrNull()
+        if (mime == null || !AudioEncoderFrameSource.hasEncoder(mime)) {
+            AppLog.w("audio: unavailable (no encoder for $codecName)")
+            return null
+        }
+        val framing = if (codecName.equals("aac", ignoreCase = true) && settings.aacAdts) "ADTS " else ""
+        AppLog.i("audio: $codecName ${framing}48kHz stereo ${MirrorSettings.AUDIO_BITRATE_BPS / 1000}kbps")
+        return listOf(codecName)
+    }
+
+    private fun createFrameSource(stream: NegotiatedStream): FrameSource {
+        if (stream.isAudio) return createAudioFrameSource(stream)
 
         // The encode frame is the negotiated resolution, forced landscape and rounded to even
         // dimensions. It is fixed for the session; the compositor fits the rotating screen into it.
@@ -466,6 +503,41 @@ class MirrorService : Service() {
     }
 
     /**
+     * Builds the audio capture + encoder for a negotiated audio stream.
+     *
+     * Reuses the video [MediaProjection][android.media.projection.MediaProjection] — no second
+     * consent. Any failure here degrades to a silent source and is logged: audio must never fail
+     * the session, which is already carrying video.
+     */
+    private fun createAudioFrameSource(stream: NegotiatedStream): FrameSource {
+        val mp = projection ?: run {
+            AppLog.w("audio: projection gone before audio setup → video only")
+            return SilentFrameSource
+        }
+        return try {
+            val audioCapture = AudioPlaybackCapture(mp, sampleRate = stream.rtpTimebase.coerceAtLeast(8_000))
+            audioCapture.start()
+            val source = try {
+                AudioEncoderFrameSource(
+                    capture = audioCapture,
+                    codecName = stream.codecName,
+                    bitRate = MirrorSettings.AUDIO_BITRATE_BPS,
+                    rtpTimebase = stream.rtpTimebase,
+                    adtsEnabled = settings.aacAdts,
+                )
+            } catch (e: Throwable) {
+                runCatching { audioCapture.release() }
+                throw e
+            }
+            audioSource = source
+            source
+        } catch (e: Throwable) {
+            AppLog.w("audio: capture/encoder setup failed → video only", e)
+            SilentFrameSource
+        }
+    }
+
+    /**
      * Wires the diagnostics aggregator to the core's RTCP path.
      *
      * The router's per-datagram feedback hook drives receiver-report / checkpoint / NACK / PLI
@@ -474,7 +546,11 @@ class MirrorService : Service() {
      */
     private fun attachDiagnostics(session: SessionController) {
         val diag = diagnostics ?: return
-        session.router?.onFeedback = { _, feedback -> diag.onFeedback(feedback) }
+        val audioSender = session.streams.firstOrNull { it.isAudio }?.sender
+        diag.audioSsrc = audioSender?.senderSsrc
+        session.router?.onFeedback = { sender, feedback ->
+            diag.onFeedback(isAudio = audioSender != null && sender === audioSender, feedback)
+        }
         session.streams.firstOrNull { !it.isAudio }?.sender?.observer = object : SenderObserver {
             override fun onPacketsRetransmitted(count: Int) = diag.onRetransmitted(count)
         }
@@ -534,8 +610,11 @@ class MirrorService : Service() {
                 val elapsed = now - lastTickMs
                 lastTickMs = now
                 val encodeSnapshot = encoder?.snapshot() ?: EncodeSnapshot(0, 0, 0, 0)
-                val line = diagnostics?.logStatsTick(s, encodeSnapshot, elapsed, suggestor?.current)
-                    ?: "${s.framesEnqueued} frames, rtt ${s.roundTripTimeMs} ms"
+                val audioStats = session.streams.firstOrNull { it.isAudio }?.sender?.stats()
+                val audioSnapshot = audioSource?.snapshot()
+                val line = diagnostics?.logStatsTick(
+                    s, encodeSnapshot, elapsed, suggestor?.current, audioStats, audioSnapshot,
+                ) ?: "${s.framesEnqueued} frames, rtt ${s.roundTripTimeMs} ms"
                 publish(status.copy(stats = line))
             }
             try {
@@ -561,11 +640,13 @@ class MirrorService : Service() {
         val screen = capture
         val comp = compositor
         val session = controller
+        val audio = audioSource
         val worker = captureThread
         capture = null
         compositor = null
         controller = null
         encoder = null
+        audioSource = null
         suggestor = null
         diagnostics = null
         projection = null
@@ -578,7 +659,7 @@ class MirrorService : Service() {
         unregisterDisplayListener()
         releaseStreamingLocks()
 
-        val teardownThread = Thread({ teardown(screen, comp, session, worker) }, "castmirror-teardown")
+        val teardownThread = Thread({ teardown(screen, comp, audio, session, worker) }, "castmirror-teardown")
         teardownThread.isDaemon = true
         teardownThread.start()
 
@@ -600,11 +681,15 @@ class MirrorService : Service() {
     private fun teardown(
         screen: ScreenCapture?,
         comp: LetterboxCompositor?,
+        audio: AudioEncoderFrameSource?,
         session: SessionController?,
         worker: HandlerThread?,
     ) {
         runCatching { screen?.release() }.onFailure { AppLog.w("service: releasing capture failed", it) }
         runCatching { comp?.release() }.onFailure { AppLog.w("service: releasing the compositor failed", it) }
+        // Releasing the audio source stops its reader thread and releases the AudioRecord + codec.
+        // The controller also closes it via the frame-source contract; both are idempotent.
+        runCatching { audio?.close() }.onFailure { AppLog.w("service: releasing audio failed", it) }
         runCatching { session?.stop() }.onFailure { AppLog.w("service: stopping the session failed", it) }
         runCatching { worker?.quitSafely() }
     }
@@ -727,10 +812,22 @@ class MirrorService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun enterForeground(text: String) {
+    /**
+     * Enters the foreground with the media-projection type, adding the microphone type only when
+     * internal audio will actually be captured.
+     *
+     * The microphone FGS type may only be declared at `startForeground` when `RECORD_AUDIO` is
+     * granted — declaring it without the grant throws on Android 14 — so [withMic] must reflect the
+     * real decision, not merely the setting.
+     */
+    private fun enterForeground(text: String, withMic: Boolean) {
         val notification = buildNotification(text)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (withMic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            startForeground(NOTIFICATION_ID, notification, type)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }

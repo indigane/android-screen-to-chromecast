@@ -11,6 +11,8 @@ import app.castmirror.core.cast.streaming.EncodedFrame
 import app.castmirror.core.cast.streaming.FrameIds
 import app.castmirror.core.cast.streaming.FakeUdpTransport
 import app.castmirror.core.cast.streaming.FrameSource
+import app.castmirror.core.cast.streaming.crypto.FrameCrypto
+import app.castmirror.core.cast.streaming.rtp.RtpDefines
 import app.castmirror.core.cast.streaming.messages.OfferProfile
 import app.castmirror.core.cast.streaming.rtcp.RtcpDefines
 import app.castmirror.core.util.Bytes
@@ -55,9 +57,19 @@ private class FakeReceiver(
      * down its ladder.
      */
     private val statusesWithoutApp: Int = 0,
+    /** When true, the ANSWER also accepts the offered `audio_source` stream (not just video). */
+    private val acceptAudio: Boolean = false,
 ) {
     val transportId = "154d8823-4c0f-4a6f-a2b9-1e9e1c9d0e11"
     val sessionId = transportId
+
+    /** The OFFER index of the accepted audio stream, or -1 if none. */
+    @Volatile
+    var audioIndex: Int = -1
+
+    /** The receiver SSRC handed back for the audio stream. */
+    @Volatile
+    var audioReceiverSsrc: Long = 0
 
     /** Everything the sender sent, for assertions. */
     val received = java.util.Collections.synchronizedList(ArrayList<CastMessage>())
@@ -272,6 +284,20 @@ private class FakeReceiver(
         acceptedIndex = video["index"]!!.asIntOrNull()!!
         // The reference receiver uses offered_ssrc + 1.
         receiverSsrc = video["ssrc"]!!.asLongOrNull()!! + 1
+
+        // Optionally accept the audio stream too, in OFFER order (audio index first, as offered).
+        val audio = if (acceptAudio) {
+            streams?.items?.mapNotNull { it.asObjOrNull() }
+                ?.firstOrNull { it["type"]?.asStringOrNull() == "audio_source" }
+        } else null
+        if (audio != null) {
+            audioIndex = audio["index"]!!.asIntOrNull()!!
+            audioReceiverSsrc = audio["ssrc"]!!.asLongOrNull()!! + 1
+        }
+        val sendIndexes = if (audio != null) listOf(audioIndex, acceptedIndex) else listOf(acceptedIndex)
+        val ssrcList: MutableList<Json> =
+            if (audio != null) mutableListOf(Json.of(audioReceiverSsrc), Json.of(receiverSsrc))
+            else mutableListOf(Json.of(receiverSsrc))
         reply(
             msg,
             jsonObj {
@@ -282,8 +308,8 @@ private class FakeReceiver(
                     "answer",
                     jsonObj {
                         put("udpPort", udpPort)
-                        put("sendIndexes", Json.arrayOfInts(listOf(acceptedIndex)))
-                        put("ssrcs", Json.Arr(mutableListOf(Json.of(receiverSsrc))))
+                        put("sendIndexes", Json.arrayOfInts(sendIndexes))
+                        put("ssrcs", Json.Arr(ssrcList))
                         put(
                             "constraints",
                             jsonObj {
@@ -930,5 +956,183 @@ fun runFieldSevenCorrelationTest() {
     } finally {
         channel.close()
         drain.interrupt()
+    }
+}
+
+/**
+ * A synthetic AUDIO frame source: independent access units, as the audio contract requires.
+ *
+ * Each frame is `isKeyFrame = true` with `referencedFrameId == frameId` (self), an RTP timestamp
+ * advancing by one AAC-LC access unit (1024 ticks at 48 kHz), and deterministic bytes so a test can
+ * verify the on-wire ciphertext decrypts back to them.
+ */
+private class AudioSyntheticFrameSource(
+    private val count: Int = 1000,
+    val frameBytes: Int = 200,
+    private val ticksPerFrame: Long = 1024,
+    private val slowMs: Long = 0,
+    private val failImmediately: Boolean = false,
+) : FrameSource {
+    private val produced = AtomicInteger(0)
+    val closed = AtomicBoolean(false)
+
+    /** The deterministic payload an access unit with [frameId] carries, before encryption. */
+    fun plaintextFor(frameId: Int): ByteArray = ByteArray(frameBytes) { ((it + frameId) and 0xFF).toByte() }
+
+    override fun nextFrame(timeoutMs: Long, nextFrameId: Int): EncodedFrame? {
+        if (failImmediately) throw RuntimeException("audio capture failed")
+        if (slowMs > 0) { Thread.sleep(minOf(timeoutMs, slowMs).coerceAtLeast(1)); return null }
+        val n = produced.incrementAndGet()
+        if (n > count) { Thread.sleep(minOf(timeoutMs, 5).coerceAtLeast(1)); return null }
+        return EncodedFrame(
+            frameId = nextFrameId,
+            isKeyFrame = true,
+            referencedFrameId = nextFrameId,
+            rtpTimestamp = nextFrameId.toLong() * ticksPerFrame,
+            data = plaintextFor(nextFrameId),
+            captureTimeMs = nextFrameId.toLong() * 21,
+        )
+    }
+
+    override fun close() { closed.set(true) }
+}
+
+/** Audio+video: the second stream negotiates, flows encrypted on its own SSRC/PT, and is decoupled. */
+fun runAudioVideoTest() {
+    T.section("Audio+video: the audio stream negotiates and flows")
+
+    val toReceiver = PipedOutputStream()
+    val receiverIn = PipedInputStream(toReceiver, 1 shl 16)
+    val toSender = PipedOutputStream()
+    val senderIn = PipedInputStream(toSender, 1 shl 16)
+
+    val receiver = FakeReceiver(
+        receiverIn, toSender,
+        appId = CastAppIds.ANDROID_MIRRORING_AUDIO_VIDEO,
+        acceptAudio = true,
+    )
+    receiver.start()
+
+    val udp = FakeUdpTransport()
+    val video = SyntheticFrameSource(count = 1000)
+    val audio = AudioSyntheticFrameSource(count = 1000)
+
+    val controller = SessionController(
+        host = "192.168.1.60",
+        port = 8009,
+        config = SessionConfig(
+            // GMS dialect, and now offering AAC audio alongside H.264 video.
+            audioCodecs = listOf("aac"),
+            fallbackPolicy = NoPayloadTypeFallback,
+        ),
+        frameSourceProvider = { ns -> if (ns.isAudio) audio else video },
+        channelProvider = { _, _ -> CastChannel(PipeCastSocket(senderIn, toReceiver, "av"), heartbeatIntervalMs = 0) },
+        udpProvider = { _, _ -> udp },
+    )
+
+    try {
+        controller.start()
+        T.assertEquals("the session reaches STREAMING", SessionState.STREAMING, controller.state)
+
+        // Negotiation: both streams accepted, audio at OFFER index 0.
+        T.assertEquals("two streams negotiated (audio + video)", 2, controller.streams.size)
+        val audioStream = controller.streams.firstOrNull { it.isAudio }
+        val videoStream = controller.streams.firstOrNull { !it.isAudio }
+        T.check("an audio stream was negotiated", audioStream != null)
+        T.check("a video stream was negotiated", videoStream != null)
+        T.assertEquals("audio is OFFER index 0", 0, audioStream!!.index)
+        T.assertEquals("the ANSWER's sendIndexes include the audio index", true, receiver.audioIndex == 0)
+        T.assertEquals("audio uses the GMS fixed audio SSRC 1", 1L, audioStream.offerStream.common.ssrc)
+        T.assertEquals("audio uses payload type 127 (the Android-TV audio hack)", 127, audioStream.offerStream.common.rtpPayloadType)
+        T.assertEquals("audio timebase is the 48 kHz sample rate", 48_000, audioStream.rtpTimebase)
+        T.assertEquals("audio Sender is flagged isAudio", true, audioStream.sender.isAudio)
+        T.assertEquals("audio receiver SSRC came from the ANSWER", receiver.audioReceiverSsrc, audioStream.receiverSsrc)
+
+        // Let media flow.
+        val deadline = System.currentTimeMillis() + 4000
+        while (System.currentTimeMillis() < deadline && udp.sentCount < 12) Thread.sleep(10)
+        val sent = udp.sent
+
+        // Audio RTP: SSRC 1 at offset 8, PT 127 in byte 1 (low 7 bits).
+        val audioRtp = sent.filter { it.size >= 19 && Bytes.u8(it, 1) and 0x7F == 127 }
+        T.check("audio RTP packets were sent", audioRtp.isNotEmpty(), "got ${audioRtp.size}")
+        T.assertEquals("audio RTP carries the audio SSRC 1", listOf(1L), audioRtp.map { Bytes.u32(it, 8) }.distinct())
+        T.check("audio RTP carries PT 127", audioRtp.all { Bytes.u8(it, 1) and 0x7F == 127 })
+        // Each audio access unit is independent: the key-frame bit is set and it references itself.
+        T.check("every audio frame sets the key-frame bit", audioRtp.all { (Bytes.u8(it, 12) and 0x80) != 0 })
+        T.check("every audio frame references itself", audioRtp.all { Bytes.u8(it, 13) == Bytes.u8(it, 18) })
+
+        // Video RTP is on its own SSRC (11) and PT (96), demuxed correctly on the shared socket.
+        val videoRtp = sent.filter { it.size >= 19 && Bytes.u8(it, 1) and 0x7F == 96 }
+        T.check("video RTP still flows on its own SSRC/PT", videoRtp.isNotEmpty())
+        T.assertEquals("video RTP carries the video SSRC 11", listOf(11L), videoRtp.map { Bytes.u32(it, 8) }.distinct())
+
+        // AES-CTR encrypts audio exactly as video: the on-wire ciphertext of a single-packet audio
+        // frame decrypts back to the source's known plaintext, using the audio stream's own key/IV.
+        val common = audioStream.offerStream.common
+        val crypto = FrameCrypto(common.aesKey, common.aesIvMask)
+        val onePacket = audioRtp.first { Bytes.u16(it, 16) == 0 } // max_packet_id == 0: a whole frame in one packet
+        val frameIdLow = Bytes.u8(onePacket, 13)
+        val ciphertext = onePacket.copyOfRange(RtpDefines.BASE_RTP_HEADER_SIZE, onePacket.size)
+        T.assertBytes(
+            "audio payload decrypts to the source plaintext (AES-CTR applied to audio as to video)",
+            audio.plaintextFor(frameIdLow),
+            crypto.decrypt(frameIdLow, ciphertext),
+        )
+
+        // A Sender Report is emitted for the audio SSRC (its own lip-sync anchor).
+        val audioSr = sent.firstOrNull { Bytes.u8(it, 1) == 200 && Bytes.u32(it, 4) == 1L }
+        T.check("a Sender Report was emitted for the audio SSRC", audioSr != null)
+
+        // Decoupling: audio and video ran to STREAMING together on independent pump threads.
+        T.check("both streams enqueued frames", audioStream.sender.stats().framesEnqueued > 0 && videoStream!!.sender.stats().framesEnqueued > 0)
+    } finally {
+        controller.stop()
+        receiver.stop()
+    }
+
+    T.section("Audio+video: a failing audio source never stalls the video")
+
+    val toReceiver2 = PipedOutputStream()
+    val receiverIn2 = PipedInputStream(toReceiver2, 1 shl 16)
+    val toSender2 = PipedOutputStream()
+    val senderIn2 = PipedInputStream(toSender2, 1 shl 16)
+    val receiver2 = FakeReceiver(
+        receiverIn2, toSender2,
+        appId = CastAppIds.ANDROID_MIRRORING_AUDIO_VIDEO,
+        acceptAudio = true,
+    )
+    receiver2.start()
+
+    val udp2 = FakeUdpTransport()
+    val video2 = SyntheticFrameSource(count = 1000)
+    // This audio source throws on its very first nextFrame — Tier A capture can fail at any moment.
+    val failingAudio = AudioSyntheticFrameSource(failImmediately = true)
+
+    val controller2 = SessionController(
+        host = "192.168.1.61",
+        config = SessionConfig(audioCodecs = listOf("aac"), fallbackPolicy = NoPayloadTypeFallback),
+        frameSourceProvider = { ns -> if (ns.isAudio) failingAudio else video2 },
+        channelProvider = { _, _ -> CastChannel(PipeCastSocket(senderIn2, toReceiver2, "av2"), heartbeatIntervalMs = 0) },
+        udpProvider = { _, _ -> udp2 },
+    )
+    try {
+        controller2.start()
+        T.assertEquals("the session still reaches STREAMING with a broken audio source", SessionState.STREAMING, controller2.state)
+        val videoStream2 = controller2.streams.first { !it.isAudio }
+        // Give video time to flow while the audio pump has already died.
+        val vDeadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < vDeadline && videoStream2.sender.stats().framesEnqueued < 3) Thread.sleep(20)
+        T.check(
+            "video keeps flowing after the audio source failed",
+            videoStream2.sender.stats().framesEnqueued >= 3,
+            "video frames ${videoStream2.sender.stats().framesEnqueued}",
+        )
+        T.check("the failed audio source was closed", failingAudio.closed.get())
+        T.assertEquals("the session is not torn down by the audio failure", SessionState.STREAMING, controller2.state)
+        T.assertEquals("the audio stream enqueued nothing", 0L, controller2.streams.first { it.isAudio }.sender.stats().framesEnqueued)
+    } finally {
+        controller2.stop()
+        receiver2.stop()
     }
 }

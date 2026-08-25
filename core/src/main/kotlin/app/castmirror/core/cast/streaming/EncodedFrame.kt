@@ -59,11 +59,48 @@ object FrameIds {
  *   coalesce or drop such frames rather than sending a non-increasing timestamp.
  * @property data the complete encoded frame, **unencrypted**. For H.264 this is Annex-B with
  *   SPS/PPS prepended in-band to every key frame; Cast has no out-of-band codec-config channel.
+ *   Audio payload bytes are described under "Audio frames" below.
  * @property captureTimeMs monotonic capture time in milliseconds, used for in-flight accounting
  *   and the sender report's NTP/RTP anchor.
  * @property newPlayoutDelayMs when greater than zero, packet 0 of this frame carries the
  *   adaptive-latency extension announcing a new playout delay. Leave at 0 unless you are
  *   changing the delay mid-session.
+ *
+ * ### Audio frames (the contract an `AudioEncoderFrameSource` must satisfy)
+ *
+ * Cast carries audio on its own stream (its own SSRC, frame-id and sequence-number spaces), and
+ * the same [Sender]/[app.castmirror.core.cast.streaming.rtp.RtpPacketizer]/`FrameCrypto` path
+ * transports it — the RTP/RTCP layer is codec-agnostic and just moves opaque frame bytes. An audio
+ * frame source must produce each access unit as an EncodedFrame with:
+ *
+ *  * **`isKeyFrame = true` and `referencedFrameId = frameId`** — every audio access unit is
+ *    independently decodable (AAC-LC has no inter-frame prediction; each Opus packet stands alone),
+ *    so each frame references only itself. This sets the RTP key-frame bit and self-reference the
+ *    receiver expects for audio.
+ *  * **`rtpTimestamp` in sample-rate ticks** at the stream's 48 kHz timebase, **strictly
+ *    increasing**. One 1024-sample AAC-LC frame advances it by 1024; a 10 ms Opus frame by 480, a
+ *    20 ms frame by 960. Derive it from the sample count (or `presentationTimeUs * 48000 / 1e6`),
+ *    never from a wall clock.
+ *  * **`data` = one encoded audio access unit**, and nothing else:
+ *      * **AAC (GMS profile, `codecName = "aac"`, payload type 127):** one **ADTS-framed AAC-LC**
+ *        access unit — a 7-byte ADTS header (syncword `0xFFF`, MPEG-4, AAC-LC, sample-rate index 3
+ *        = 48 kHz, channel config 2 = stereo) followed by the raw AU. Cast has no audio analogue of
+ *        video's in-band SPS/PPS and sends no AudioSpecificConfig, so ADTS — which is
+ *        self-describing — is how the receiver learns the format. Android's `audio/mp4a-latm`
+ *        encoder emits **raw** AUs plus a `csd-0` (`BUFFER_FLAG_CODEC_CONFIG`) buffer: consume and
+ *        discard the `csd-0` (never send it as a frame) and **prepend the ADTS header** to each AU.
+ *        If a device's encoder already emits ADTS (syncword present), pass it through unchanged.
+ *        SPEC-UNVERIFIED against a live receiver: GMS's internal codec name for aac is
+ *        `aac_ld_adts` and it toggles an ADTS flag, which is the evidence for ADTS; the fallback if
+ *        a device test shows silence is raw AUs (no ADTS) with the receiver inferring the config
+ *        from the OFFER's `codecName`/`sampleRate`/`channels`.
+ *      * **Opus (openscreen profile, `codecName = "opus"`, payload type 96):** one **raw Opus
+ *        packet**, no ADTS, no TOC wrapper, no AudioSpecificConfig — 48 kHz, stereo, 10 ms or 20 ms
+ *        frames. This is fully specified (spec §8.4 / openscreen).
+ *
+ * Unlike video, audio frames **may** be dropped safely (each is independent), so an audio source
+ * under backpressure may shed a stale access unit rather than stall; the core pump treats audio and
+ * video uniformly (it back-pressures rather than drops) and either policy is correct for audio.
  */
 data class EncodedFrame(
     val frameId: Int,
