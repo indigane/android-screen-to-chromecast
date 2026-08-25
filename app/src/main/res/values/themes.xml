@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Theme.DeviceDefault.DayNight only exists from API 29. Below that the light DeviceDefault
+      theme is the closest match that still follows the OEM's (or GrapheneOS's) own styling
+      rather than imposing an app-specific palette.
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.Light.DarkActionBar" />
+</resources>

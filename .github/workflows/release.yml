@@ -1,0 +1,86 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tagName:
+        description: 'Tag for the release (e.g. v0.2.0)'
+        required: true
+        type: string
+
+jobs:
+  build-and-release:
+    name: Build and create a release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK packages
+        run: |
+          set -eux
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Test the protocol core
+        run: ./gradlew --no-daemon :core:coreTest
+
+      - name: Resolve the tag name
+        id: tag
+        run: |
+          set -eu
+          if [ -n "${{ github.event.inputs.tagName }}" ]; then
+            TAG="${{ github.event.inputs.tagName }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Decode the release keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > "$HOME/release.p12"
+
+      - name: Assemble the release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          export KEYSTORE_PATH="$HOME/release.p12"
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Name the APK after the tag
+        run: |
+          set -eu
+          SOURCE="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
+          mv "$SOURCE" "app/build/outputs/apk/release/castmirror-${{ steps.tag.outputs.version }}.apk"
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: CastMirror ${{ steps.tag.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            app/build/outputs/apk/release/*.apk

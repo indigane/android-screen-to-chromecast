@@ -1,0 +1,78 @@
+name: Build Debug APK
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Assemble debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # Handles the Gradle distribution download, dependency cache and build cache.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+      # ubuntu-latest ships an Android SDK, but not necessarily platform 36.
+      # This is a no-op when the packages are already present.
+      - name: Install Android SDK packages
+        run: |
+          set -eux
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # The protocol core's suite is a plain main() with a hand-rolled assertion harness, wired
+      # into Gradle as the :core:coreTest JavaExec task. Running it before the APK means a
+      # protocol regression fails the build in seconds rather than after a full Android assemble.
+      - name: Test the protocol core
+        run: ./gradlew --no-daemon --stacktrace :core:coreTest
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: castmirror-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports-${{ github.sha }}
+          path: |
+            app/build/reports/**
+            app/build/outputs/logs/**
+            core/build/reports/**
+          if-no-files-found: ignore

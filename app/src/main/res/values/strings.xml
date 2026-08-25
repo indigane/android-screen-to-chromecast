@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CastMirror</string>
+
+    <string name="notification_channel_name">Screen mirroring</string>
+    <string name="notification_channel_description">Shown while the screen is being mirrored to a Chromecast.</string>
+
+    <string name="section_receivers">Receivers</string>
+    <string name="section_settings">Settings</string>
+    <string name="section_log">Log</string>
+
+    <string name="action_start">Start</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_probe">Probe</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_enter_ip">Enter IP…</string>
+    <string name="action_clear_log">Clear</string>
+
+    <string name="status_idle">Idle</string>
+    <string name="status_stopped_by_user">Stopped</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_preparing">Preparing…</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_launching">Launching the receiver app…</string>
+    <string name="status_negotiating">Negotiating…</string>
+    <string name="status_streaming">Mirroring to %1$s</string>
+    <string name="status_streaming_generic">Mirroring</string>
+    <string name="status_stopping">Stopping…</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_failed">Failed</string>
+
+    <string name="error_consent_rejected">Screen capture consent was rejected. Grant it again and retry.</string>
+    <string name="error_network_lost">The network connection was lost.</string>
+    <string name="error_session_ended">The session ended.</string>
+    <string name="error_capture_stopped">Screen capture was stopped.</string>
+    <string name="error_display_stopped">The virtual display stopped.</string>
+    <string name="error_start_request_incomplete">The start request was incomplete.</string>
+    <string name="status_probing">Probing %1$s…</string>
+    <string name="status_probe_ok">Probe succeeded — %1$s</string>
+    <string name="status_probe_failed">Probe failed — %1$s</string>
+
+    <string name="devices_searching">Searching for Chromecast receivers on this network…</string>
+    <string name="device_unknown_model">Unknown model</string>
+    <string name="device_video">video</string>
+    <string name="device_audio_only">audio only</string>
+
+    <string name="setting_resolution">Resolution</string>
+    <string name="setting_frame_rate">Frame rate</string>
+    <string name="setting_bitrate">Bitrate (kbps)</string>
+    <string name="setting_codec">Video codec</string>
+    <string name="setting_app_id">Receiver app</string>
+    <string name="setting_audio">Mirror system audio</string>
+    <string name="setting_audio_explanation">System audio capture needs a privileged permission that no ordinary app can hold, so mirroring is video only.</string>
+    <string name="setting_verbose">Verbose diagnostics</string>
+    <string name="setting_verbose_explanation">Logs a detailed per-second STATS line and RTCP/keyframe/retransmit events. Leave on for a capture; turn off to reduce the log.</string>
+
+    <string name="dialog_address_title">Receiver address</string>
+    <string name="dialog_address_hint">192.168.1.50 or 192.168.1.50:8009</string>
+
+    <string name="error_no_device">Select a receiver first.</string>
+    <string name="error_consent_denied">Screen capture was not allowed.</string>
+
+    <string name="tile_description_idle">Open CastMirror to start mirroring</string>
+    <string name="tile_description_active">CastMirror is mirroring the screen</string>
+</resources>

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No `package` attribute: AGP 8+ takes the application id from `android.namespace` in
+  build.gradle.kts and rejects a manifest that also declares one. The Gradle-free sandbox build
+  (build-sandbox.sh) injects `package="app.castmirror"` into a copy of this file, because aapt2
+  requires it when it is driven directly.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The Cast control channel (TLS to port 8009) and the RTP/RTCP media path. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      ACCESS_WIFI_STATE and CHANGE_WIFI_MULTICAST_STATE are what the pure-Java mDNS fallback
+      needs: Wi-Fi hardware filters multicast frames unless a MulticastLock is held, so without
+      them discovery falls back to NsdManager alone, whose TXT records are unreliable.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!--
+      Held only for the duration of a streaming session: a Wi-Fi lock keeps the radio out of
+      power save (real-time RTP does not survive it) and a partial wake lock keeps the encoder and
+      pacer running while the screen is off. Both are released on every teardown path.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+      Required from Android 14: a foreground service that obtains a MediaProjection must declare
+      the mediaProjection type and hold the matching permission.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!-- Android 13+. Without it the ongoing notification, and therefore the Stop action, is hidden. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name="app.castmirror.ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="app.castmirror.service.MirrorService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name="app.castmirror.service.MirrorTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_cast"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <!--
+              The tile only opens the app. Every session needs fresh MediaProjection consent,
+              which is single-use from Android 14 and can only be requested from an activity.
+            -->
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="false" />
+        </service>
+    </application>
+</manifest>
