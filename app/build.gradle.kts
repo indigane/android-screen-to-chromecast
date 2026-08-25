@@ -1,6 +1,8 @@
 plugins {
+    // AGP 9 provides Kotlin support built in; the standalone `org.jetbrains.kotlin.android`
+    // plugin must NOT be applied alongside it (AGP fails the build if it is). Kotlin is
+    // configured via the `kotlin { }` block below. See https://kotl.in/gradle/agp-built-in-kotlin
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -59,7 +61,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // src/main/kotlin needs no declaration: the Kotlin Android plugin adds it to every source set
+    // src/main/kotlin needs no declaration: AGP's built-in Kotlin adds it to every source set
     // alongside src/main/java.
 
     // Nothing in the app reads BuildConfig; the version name comes from PackageManager so the

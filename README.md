@@ -4,13 +4,13 @@ Open-source screen mirroring to a Chromecast — **no Google Play Services requi
 GrapheneOS and other de-Googled Android.
 
 Android's built-in "Cast screen" feature is part of Google Play Services. On a de-Googled ROM it is
-simply absent. CastMirror is a clean-room implementation of the Google Cast Streaming protocol —
+simply absent. CastMirror is an independent implementation of the Google Cast Streaming protocol —
 device discovery, the TLS control channel, `OFFER`/`ANSWER` negotiation, AES-128-CTR frame
 encryption, RTP packetization, RTCP feedback and retransmission — so it can mirror your screen to a
 Chromecast using only the Android framework, with nothing from Google on the device.
 
-> **Status: early (v0.2.0).** Screen mirroring works end-to-end with H.264. It has been tested on a
-> limited set of hardware; expect rough edges and please file issues.
+> **Status: early (v0.3.0).** Screen mirroring works end-to-end with H.264, with optional internal
+> audio. It has been tested on a limited set of hardware; expect rough edges and please file issues.
 
 ---
 
