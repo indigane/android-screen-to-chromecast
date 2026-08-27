@@ -1,0 +1,140 @@
+CastMirror — Third-Party Licenses
+==================================
+
+CastMirror itself is released under the MIT No Attribution license (see the
+LICENSE file). Portions of CastMirror are derived from third-party software
+that is distributed under its own license terms. Those terms are reproduced
+below and continue to apply to the derived portions. Nothing in CastMirror's
+own LICENSE removes or supersedes the notice requirements of the licenses in
+this file.
+
+Two third-party projects are involved, both from Google and both licensed
+under the identical 3-clause BSD license:
+
+  1. The Open Screen Library ("openscreen")
+  2. The Chromium project ("chromium")
+
+
+================================================================================
+1. The Open Screen Library (openscreen)
+================================================================================
+
+Upstream:   https://chromium.googlesource.com/openscreen/
+License:    BSD 3-Clause ("Copyright The Chromium Authors")
+
+CastMirror's protocol core (`core/`) is an independent Kotlin re-implementation
+of the Cast Streaming sender, written by studying the openscreen reference
+implementation. The following files are ports or close derivatives of specific
+openscreen source files (the corresponding upstream file is named in each
+Kotlin file's header comment) and are therefore derivative works of openscreen:
+
+  core/cast/streaming/crypto/FrameCrypto.kt
+      <- cast/streaming/impl/frame_crypto.cc
+  core/cast/streaming/rtp/RtpPacketizer.kt
+      <- cast/streaming/impl/rtp_packetizer.cc
+  core/cast/streaming/rtp/RtpDefines.kt
+      <- cast/streaming/impl/rtp_defines.h
+  core/cast/streaming/rtcp/SenderReportBuilder.kt
+      <- cast/streaming/impl/sender_report_builder.cc
+  core/cast/streaming/rtcp/CompoundRtcpParser.kt
+      <- cast/streaming/impl/compound_rtcp_parser.cc
+  core/cast/streaming/rtcp/RtcpDefines.kt
+      <- cast/streaming/impl/rtcp_common.{h,cc}
+  core/cast/streaming/rtcp/NtpTime.kt
+      <- cast/streaming/impl/ntp_time.{h,cc}
+  core/cast/streaming/rtcp/FrameIdExpansion.kt
+      <- cast/streaming/impl/expanded_value_base.h
+  core/cast/streaming/Sender.kt
+      <- cast/streaming/impl/sender_impl.{h,cc}
+  core/cast/streaming/SenderPacketRouter.kt
+      <- cast/streaming/impl/sender_packet_router.{h,cc}
+  core/cast/streaming/UdpTransport.kt
+      <- platform/impl/udp_socket_posix.cc / cast/streaming/impl/environment.cc
+  core/cast/streaming/EncodedFrame.kt
+      <- cast/streaming/public/frame_id.h / encoded_frame.h
+  core/CastConstants.kt (the openscreen-derived constants, and the receiver
+      application ids)
+      <- cast/streaming/public/constants.h
+         cast/common/public/cast_streaming_app_ids.h
+
+Additional files in `core/` incorporate individual constants, message field
+definitions, or wire-format facts described in openscreen headers; those files
+cite the relevant openscreen path in their header comments.
+
+License text:
+
+  Copyright 2018 The Chromium Authors
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are
+  met:
+
+     * Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+     * Redistributions in binary form must reproduce the above
+  copyright notice, this list of conditions and the following disclaimer
+  in the documentation and/or other materials provided with the
+  distribution.
+     * Neither the name of Google LLC nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+================================================================================
+2. The Chromium Project (chromium)
+================================================================================
+
+Upstream:   https://chromium.googlesource.com/chromium/src/
+License:    BSD 3-Clause ("Copyright The Chromium Authors")
+
+CastMirror incorporates a small number of constants and default values
+described in Chromium's Cast mirroring service. The following files reference
+Chromium as the source of specific values (cited in their header comments):
+
+  core/CastConstants.kt
+      default mirroring settings / constants, from
+      components/mirroring/service/mirror_settings.cc
+  core/discovery/CastDevice.kt
+      the default device-capability constant kDefaultDeviceCapabilities = 6149
+
+License text:
+
+  Copyright 2015 The Chromium Authors
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are
+  met:
+
+     * Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+     * Redistributions in binary form must reproduce the above
+  copyright notice, this list of conditions and the following disclaimer
+  in the documentation and/or other materials provided with the
+  distribution.
+     * Neither the name of Google LLC nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
